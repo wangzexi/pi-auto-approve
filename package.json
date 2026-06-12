@@ -1,0 +1,13 @@
+{
+  "name": "pi-auto-approve",
+  "version": "1.0.0",
+  "description": "自动审查危险命令的 Pi 扩展 — 三层防护：自动放行、自动阻止、子模型独立审查",
+  "keywords": ["pi-package"],
+  "license": "MIT",
+  "pi": {
+    "extensions": ["./auto-approve.ts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}
