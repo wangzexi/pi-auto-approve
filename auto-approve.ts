@@ -8,87 +8,58 @@
  *   2. Auto-blocked: obviously dangerous (rm -rf, sudo, chmod 777)
  *   3. Needs review: everything else → call a subagent LLM to decide
  *
- * The reviewer subagent runs in-process via createAgentSession() (no subprocess).
+ * The reviewer calls the model directly via completeSimple() — no subprocess,
+ * no AgentSession overhead.
  *
  * Configuration (optional):
  *   Add to ~/.pi/agent/settings.json or .pi/settings.json:
- *     "autoApprove": { "model": "deepseek/deepseek-v4-flash" }
+ *     "autoApprove": { "model": "deepseek/deepseek-v4-pro" }
  *   If unset, falls back to defaultProvider/defaultModel.
  */
 
 import * as fs from "node:fs";
-import type { AssistantMessage, TextContent } from "@earendil-works/pi-ai";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import {
-    createAgentSession,
-    SessionManager,
-    SettingsManager,
-    getAgentDir,
-    ModelRegistry,
-    AuthStorage,
-} from "@earendil-works/pi-coding-agent";
 import * as path from "node:path";
+import { completeSimple } from "@earendil-works/pi-ai";
+import type { TextContent } from "@earendil-works/pi-ai";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { AuthStorage, getAgentDir, ModelRegistry } from "@earendil-works/pi-coding-agent";
 
 // ── Tier 1: Auto-permitted command patterns ──
-//
-// These are regexps tested against the full command string.
-// The model will never see these — they bypass review entirely.
 const AUTO_PERMITTED = [
-    // Read-only directory listing
     /^(ls|dir|tree)\b/,
-    // Directory navigation
     /^cd\b/,
-    // Read-only file ops
     /^(cat|head|tail|less|more)\b/,
     /^(file|stat|wc|du|df)\b/,
-    // grep / rg / ag — read-only search
     /^(grep|rg|ag|ack)\b/,
-    // find / locate — read-only
     /^(find|locate|which|whereis|type)\b/,
-    // Git read-only operations
     /^git\s+(status|log|diff|show|branch|tag|stash\s+list|remote|ls-remote|rev-parse|rev-list|describe|whatchanged|shortlog|blame|grep|config\s+--get|config\s+--list|config\s+-l)\b/,
     /^git\s+log\b/,
-    // Docker/container read-only
     /^(docker|podman)\s+(ps|images|inspect|logs|stats|info|version|history|top|diff)\b/,
-    // Package manager info/list
     /^(npm|yarn|pnpm)\s+(list|info|view|outdated|audit|why|config\s+list)\b/,
     /^(pip|pip3)\s+(list|show|freeze|search)\b/,
     /^(cargo|go)\s+(search|doc)\b/,
-    // System info
     /^(echo|printenv|env|whoami|hostname|uname|uptime|id|groups|pwd|date)\b/,
-    // Python/node one-off checks (no args = safe)
     /^(python3?|node|uv|tsx|npx)\s+(--version|-v|--help|-h)$/,
-    // Help flags
     /^.*\s+(--help|-h)\s*$/,
-    // Simple echo (for env var checks, etc.)
     /^echo\s/,
-    // Print working directory
     /^pwd\b/,
 ];
 
-// ── Tier 2: Auto-blocked patterns (never run, never ask) ──
+// ── Tier 2: Auto-blocked patterns ──
 const AUTO_BLOCKED = [
-    // Destructive file ops
     /\brm\s+(-rf?|--recursive)\b/,
     /\brm\s+(-rf?|--recursive)\s+\/\b/,
-    // Privilege escalation
     /\bsudo\b/,
-    // Permission changes that are too open
     /\bchmod\s+.*777/,
-    // Fork bombs and resource exhaustion
-    /:\(\)\s*\{/,  // fork bomb pattern
-    // Disk destructive
+    /:\(\)\s*\{/,
     /\bdd\s+if=/,
     /\bmkfs\./,
-    // System shutdown
     /\b(shutdown|reboot|halt|poweroff)\b/,
-    // Git destructive without review
     /\bgit\s+(push\s+--force|reset\s+--hard|clean\s+-[fd]+)\b/,
-    // Direct /dev writes
     />\s*\/dev\//,
 ];
 
-// ── Review prompt template ──
+// ── Review prompt ──
 function buildReviewPrompt(command: string, cwd: string): string {
     const projectName = path.basename(cwd);
     return `You are a security reviewer for a coding agent. You must decide whether to ALLOW or BLOCK the following bash command.
@@ -120,32 +91,31 @@ Reply with ONLY one line:
 Do not include any other text, markdown, or explanation.`;
 }
 
-// ── Extract last assistant text from session messages ──
-function lastAssistantText(messages: unknown[]): string {
-    for (let i = messages.length - 1; i >= 0; i--) {
-        const message = messages[i] as Partial<AssistantMessage> | undefined;
-        if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
-        const text = message.content
-            .filter((part): part is TextContent => part.type === "text")
-            .map((part) => part.text)
-            .join("");
-        if (text.trim()) return text;
-    }
-    return "";
-}
-
-// ── Parse ALLOW/BLOCK from reviewer response ──
+// ── Parse ALLOW/BLOCK ──
 function parseDecision(text: string): { allowed: boolean; reason: string } | null {
     const allowMatch = text.match(/^ALLOW:\s*(.+)/im);
     if (allowMatch) return { allowed: true, reason: allowMatch[1].trim() };
-
     const blockMatch = text.match(/^BLOCK:\s*(.+)/im);
     if (blockMatch) return { allowed: false, reason: blockMatch[1].trim() };
-
     return null;
 }
 
-// ── Review via in-process AgentSession (no subprocess) ──
+// ── Read autoApprove.model from settings ──
+function findReviewModel(cwd: string, agentDir: string): { provider: string; modelId: string } | undefined {
+    for (const sp of [path.join(cwd, ".pi", "settings.json"), path.join(agentDir, "settings.json")]) {
+        try {
+            const raw = JSON.parse(fs.readFileSync(sp, "utf-8"));
+            const cfg = raw.autoApprove;
+            if (cfg?.model && typeof cfg.model === "string") {
+                const parts = cfg.model.split("/");
+                if (parts.length === 2) return { provider: parts[0], modelId: parts[1] };
+            }
+        } catch { /* ignore */ }
+    }
+    return undefined;
+}
+
+// ── Review: direct model call, no session ──
 async function reviewWithLLM(
     command: string,
     cwd: string,
@@ -154,87 +124,48 @@ async function reviewWithLLM(
     const prompt = buildReviewPrompt(command, cwd);
     const agentDir = getAgentDir();
 
-    // ── Resolve review model ──
-    // Priority: 1) autoApprove.model in project settings
-    //           2) autoApprove.model in global settings
-    //           3) defaultProvider/defaultModel
+    // Resolve model
     const authStorage = AuthStorage.create(path.join(agentDir, "auth.json"));
     const modelRegistry = ModelRegistry.create(authStorage, path.join(agentDir, "models.json"));
-
-    function findReviewModel(): { provider: string; modelId: string } | undefined {
-        // Try project .pi/settings.json first
-        const projectSettingsPath = path.join(cwd, ".pi", "settings.json");
-        for (const sp of [projectSettingsPath, path.join(agentDir, "settings.json")]) {
-            try {
-                const raw = JSON.parse(fs.readFileSync(sp, "utf-8"));
-                const cfg = raw.autoApprove;
-                if (cfg?.model && typeof cfg.model === "string") {
-                    const parts = cfg.model.split("/");
-                    if (parts.length === 2) {
-                        return { provider: parts[0], modelId: parts[1] };
-                    }
-                }
-            } catch { /* file not found or invalid JSON */ }
-        }
-        return undefined;
-    }
-
-    const configured = findReviewModel();
+    const configured = findReviewModel(cwd, agentDir);
     const provider = configured?.provider ?? "deepseek";
     const modelId = configured?.modelId ?? "deepseek-v4-flash";
     const model = modelRegistry.find(provider, modelId);
+    if (!model) {
+        return { allowed: false, reason: `Review model ${provider}/${modelId} not found` };
+    }
 
-    const { session } = await createAgentSession({
-        cwd,
-        agentDir,
-        authStorage,
-        modelRegistry,
-        model,
-        sessionManager: SessionManager.inMemory(cwd),
-        settingsManager: SettingsManager.create(cwd, agentDir),
-        customTools: [],
-        noTools: "all",
-        tools: [],
-        thinkingLevel: "off",
-    });
+    const auth = await modelRegistry.getApiKeyAndHeaders(model);
+    if (!auth.ok) {
+        return { allowed: false, reason: `Auth failed: ${auth.error}` };
+    }
 
-    // Timeout + abort handling
-    const timeout = new Promise<never>((_, reject) => {
-        const timer = setTimeout(() => {
-            session.abort();
-            reject(new Error("Review timed out after 15s"));
-        }, 15000);
-
-        if (signal) {
-            if (signal.aborted) {
-                clearTimeout(timer);
-                reject(new Error("Review aborted"));
-                return;
-            }
-            const onAbort = () => {
-                clearTimeout(timer);
-                session.abort();
-                reject(new Error("Review aborted"));
-            };
-            signal.addEventListener("abort", onAbort, { once: true });
-        }
-    });
+    // Timeout via AbortSignal
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), 15000);
+    if (signal) {
+        if (signal.aborted) { clearTimeout(timer); return { allowed: false, reason: "Review aborted" }; }
+        signal.addEventListener("abort", () => { clearTimeout(timer); abort.abort(); }, { once: true });
+    }
 
     try {
-        await Promise.race([
-            session.prompt(prompt),
-            timeout,
-        ]);
+        const message = await completeSimple(model, [
+            { role: "user", content: [{ type: "text" as const, text: prompt }] },
+        ], {
+            apiKey: auth.apiKey,
+            signal: abort.signal,
+        });
 
-        // Parse result from session messages
-        const text = lastAssistantText(session.messages as unknown[]);
+        const text = message.content
+            .filter((p): p is TextContent => p.type === "text")
+            .map((p) => p.text)
+            .join("");
+
         const decision = text ? parseDecision(text) : null;
-
         if (decision) return decision;
-
         return { allowed: false, reason: `Reviewer response unclear: "${text.slice(0, 200)}"` };
     } finally {
-        session.dispose();
+        clearTimeout(timer);
     }
 }
 
@@ -245,58 +176,46 @@ export default function (pi: ExtensionAPI) {
         const command = (event.input.command as string).trim();
         if (!command) return undefined;
 
-        // Tier 2: Auto-blocked
         for (const pattern of AUTO_BLOCKED) {
             if (pattern.test(command)) {
                 return { block: true, reason: `Auto-blocked: matches dangerous pattern "${pattern.source}"` };
             }
         }
 
-        // Tier 1: Auto-permitted
         for (const pattern of AUTO_PERMITTED) {
             if (pattern.test(command)) {
-                return undefined; // allow through
+                return undefined;
             }
         }
 
-        // Tier 3: Needs review
         if (!ctx.hasUI) {
-            // Non-interactive mode: block by default
             return { block: true, reason: "Command requires review but no UI available" };
         }
 
-        ctx.ui.setStatus("auto-reviewer", `Reviewing: ${command.slice(0, 60)}...`);
+        ctx.ui.setStatus("auto-approve", `Reviewing: ${command.slice(0, 60)}...`);
 
         try {
             const decision = await reviewWithLLM(command, ctx.cwd, ctx.signal);
-
-            ctx.ui.setStatus("auto-reviewer", undefined);
+            ctx.ui.setStatus("auto-approve", undefined);
 
             if (decision.allowed) {
-                ctx.ui.notify(`Auto-reviewer: ✓ ${decision.reason}`, "info");
-                return undefined; // allow through
+                ctx.ui.notify(`Auto-approve: ✓ ${decision.reason}`, "info");
+                return undefined;
             } else {
-                ctx.ui.notify(`Auto-reviewer: ✗ ${decision.reason}`, "warning");
-                return { block: true, reason: `Auto-reviewer blocked: ${decision.reason}` };
+                ctx.ui.notify(`Auto-approve: ✗ ${decision.reason}`, "warning");
+                return { block: true, reason: `Auto-approve blocked: ${decision.reason}` };
             }
         } catch (err) {
-            ctx.ui.setStatus("auto-reviewer", undefined);
+            ctx.ui.setStatus("auto-approve", undefined);
             const msg = err instanceof Error ? err.message : String(err);
-
-            // On review failure, ask user
             const choice = await ctx.ui.select(
-                `⚠️  Auto-review failed: ${msg}\n\nCommand: ${command}\n\nAllow?`,
+                `⚠️  Auto-approve failed: ${msg}\n\nCommand: ${command}\n\nAllow?`,
                 ["Yes", "No"],
             );
             if (choice !== "Yes") {
-                return { block: true, reason: "Auto-review failed and user declined" };
+                return { block: true, reason: "Auto-approve failed and user declined" };
             }
             return undefined;
         }
-    });
-
-    // Clean up status on session end
-    pi.on("session_shutdown", async (_event, _ctx) => {
-        // No cleanup needed; status is session-scoped
     });
 }
