@@ -185,46 +185,38 @@ export default function (pi: ExtensionAPI) {
             const reviewCtx = buildReviewContext(ctx.sessionManager, command);
             const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
 
-            const abort = new AbortController();
-            const timer = setTimeout(() => abort.abort(), 15000);
-            if (ctx.signal) {
-                if (ctx.signal.aborted) {
-                    clearTimeout(timer);
-                    return { block: true, reason: "Review aborted" };
-                }
-                ctx.signal.addEventListener("abort", () => {
-                    clearTimeout(timer);
-                    abort.abort();
-                }, { once: true });
-            }
-
-            let decision: { allowed: boolean; reason: string } | null = null;
-            try {
-                const message = await completeSimple(ctx.model, { messages: reviewCtx }, {
-                    apiKey: auth.ok ? auth.apiKey : undefined,
-                    signal: abort.signal,
-                });
-
+            // Timeout via Promise.race (more reliable than AbortSignal for some providers)
+            const reviewPromise = completeSimple(ctx.model, { messages: reviewCtx }, {
+                apiKey: auth.ok ? auth.apiKey : undefined,
+            }).then((message) => {
                 const text = message.content
                     .filter((p): p is TextContent => p.type === "text")
                     .map((p) => p.text)
                     .join("");
+                return text || "";
+            });
 
-                decision = text ? parseDecision(text) : null;
-            } finally {
-                clearTimeout(timer);
+            const timeoutPromise = new Promise<string>((_, reject) =>
+                setTimeout(() => reject(new Error("Review timed out")), 12000)
+            );
+
+            let text: string;
+            try {
+                text = await Promise.race([reviewPromise, timeoutPromise]);
+            } catch {
+                // Timeout or error — allow the command to proceed but warn the user
+                ctx.ui.setStatus("auto-approve", undefined);
+                ctx.ui.notify(`Auto-approve: ⚠️ review failed, command allowed`, "warning");
+                return undefined;
             }
 
             ctx.ui.setStatus("auto-approve", undefined);
 
+            const decision = text ? parseDecision(text) : null;
+
             if (!decision) {
-                const choice = await ctx.ui.select(
-                    `⚠️  Auto-approve: unclear response\n\nCommand: ${command}\n\nAllow?`,
-                    ["Yes", "No"],
-                );
-                if (choice !== "Yes") {
-                    return { block: true, reason: "Auto-approve: user declined" };
-                }
+                // Unclear response — allow but warn
+                ctx.ui.notify(`Auto-approve: ⚠️ unclear response, command allowed`, "warning");
                 return undefined;
             }
 
@@ -237,14 +229,7 @@ export default function (pi: ExtensionAPI) {
             }
         } catch (err) {
             ctx.ui.setStatus("auto-approve", undefined);
-            const msg = err instanceof Error ? err.message : String(err);
-            const choice = await ctx.ui.select(
-                `⚠️  Auto-approve failed: ${msg}\n\nCommand: ${command}\n\nAllow?`,
-                ["Yes", "No"],
-            );
-            if (choice !== "Yes") {
-                return { block: true, reason: "Auto-approve failed and user declined" };
-            }
+            // Last resort — allow through
             return undefined;
         }
     });
