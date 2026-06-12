@@ -188,6 +188,8 @@ export default function (pi: ExtensionAPI) {
             // Timeout via Promise.race (more reliable than AbortSignal for some providers)
             const reviewPromise = completeSimple(ctx.model, { messages: reviewCtx }, {
                 apiKey: auth.ok ? auth.apiKey : undefined,
+                reasoning: "minimal",
+                thinkingBudgets: { minimal: 256 },
             }).then((message) => {
                 const text = message.content
                     .filter((p): p is TextContent => p.type === "text")
