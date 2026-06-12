@@ -14,6 +14,9 @@
  *   - OpenAI Codex Guardian (open source: github.com/openai/codex)
  *   - Claude Code Auto Mode classifier (reverse-engineered)
  *   - Cursor Auto-review
+ *
+ * Approval/rejection reasons are appended to the tool result so they appear
+ * in the conversation history — no separate notifications or status bars.
  */
 
 import { completeSimple } from "@earendil-works/pi-ai";
@@ -53,9 +56,10 @@ const AUTO_BLOCKED = [
     />\s*\/dev\//,                                 // write to device
 ];
 
+// ── Staging area: decisions to inject into tool results ──
+const toolCallDecisions = new Map<string, string>();
+
 // ── Build self-review prompt ──
-// Combines best practices from Codex Guardian, Claude Code Auto Mode,
-// and Cursor Auto-review into a self-review format.
 function buildReviewPrompt(command: string): string {
     return [
         "## 🔍 Pre-flight check",
@@ -150,6 +154,7 @@ function parseDecision(text: string): { allowed: boolean; reason: string } | nul
 }
 
 export default function (pi: ExtensionAPI) {
+    // ── tool_call: intercept and decide ──
     pi.on("tool_call", async (event, ctx) => {
         if (event.toolName !== "bash") return undefined;
 
@@ -159,7 +164,7 @@ export default function (pi: ExtensionAPI) {
         // Tier 2: Auto-block (catastrophic only)
         for (const pattern of AUTO_BLOCKED) {
             if (pattern.test(command)) {
-                return { block: true, reason: `Auto-blocked: catastrophic command "${pattern.source}"` };
+                return { block: true, reason: `🛡️ Auto-blocked: ${pattern.source}` };
             }
         }
 
@@ -170,13 +175,9 @@ export default function (pi: ExtensionAPI) {
             }
         }
 
-        // Tier 3: Self-review
-        if (!ctx.hasUI) {
-            return { block: true, reason: "Command requires review but no UI available" };
-        }
-
-        if (!ctx.model || !ctx.modelRegistry) {
-            return { block: true, reason: "No model available for review" };
+        // Tier 3: Self-review — requires interactive mode
+        if (!ctx.hasUI || !ctx.model || !ctx.modelRegistry) {
+            return { block: true, reason: "🛡️ Requires review (non-interactive mode)" };
         }
 
         ctx.ui.setStatus("auto-approve", `Reviewing: ${command.slice(0, 60)}...`);
@@ -185,7 +186,6 @@ export default function (pi: ExtensionAPI) {
             const reviewCtx = buildReviewContext(ctx.sessionManager, command);
             const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
 
-            // Timeout via Promise.race (more reliable than AbortSignal for some providers)
             const reviewPromise = completeSimple(ctx.model, { messages: reviewCtx }, {
                 apiKey: auth.ok ? auth.apiKey : undefined,
                 reasoning: "medium",
@@ -205,9 +205,9 @@ export default function (pi: ExtensionAPI) {
             try {
                 text = await Promise.race([reviewPromise, timeoutPromise]);
             } catch {
-                // Timeout or error — allow the command to proceed but warn the user
                 ctx.ui.setStatus("auto-approve", undefined);
-                ctx.ui.notify(`Auto-approve: ⚠️ review failed, command allowed`, "warning");
+                // Fail-open: allow through, inject a note
+                toolCallDecisions.set(event.toolCallId, "🛡️ Review timed out — allowed");
                 return undefined;
             }
 
@@ -216,22 +216,34 @@ export default function (pi: ExtensionAPI) {
             const decision = text ? parseDecision(text) : null;
 
             if (!decision) {
-                // Unclear response — allow but warn
-                ctx.ui.notify(`Auto-approve: ⚠️ unclear response, command allowed`, "warning");
+                toolCallDecisions.set(event.toolCallId, "🛡️ Review unclear — allowed");
                 return undefined;
             }
 
             if (decision.allowed) {
-                // Auto-approved — silent, no notification
+                toolCallDecisions.set(event.toolCallId, `🛡️ ${decision.reason}`);
                 return undefined;
             } else {
-                ctx.ui.notify(`Auto-approve: ✗ ${decision.reason}`, "warning");
-                return { block: true, reason: `Auto-approve: ${decision.reason}` };
+                return { block: true, reason: `🛡️ ${decision.reason}` };
             }
-        } catch (err) {
+        } catch {
             ctx.ui.setStatus("auto-approve", undefined);
-            // Last resort — allow through
+            toolCallDecisions.set(event.toolCallId, "🛡️ Review error — allowed");
             return undefined;
         }
+    });
+
+    // ── tool_result: inject approval note into conversation ──
+    pi.on("tool_result", async (event) => {
+        const note = toolCallDecisions.get(event.toolCallId);
+        if (!note) return; // not a reviewed call
+
+        toolCallDecisions.delete(event.toolCallId);
+
+        // Prepend the note to the tool result content
+        const header = { type: "text" as const, text: note + "\n" };
+        return {
+            content: [header, ...(event.content ?? [])],
+        };
     });
 }
