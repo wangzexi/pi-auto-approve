@@ -13,7 +13,7 @@ Auto-reviews bash commands before execution, similar to Codex's auto-reviewer.
 ## 特性
 
 - ✅ **进程内审查** — 使用 `createAgentSession()` 进程内调用，不 fork 子进程，审查更快
-- ✅ **锁定模型** — 子模型固定 `deepseek/deepseek-v4-flash`，速度与成本可控
+- ✅ **可配置审查模型** — 可指定专用模型做审查，不配置则跟随主模型
 - ✅ **超时降级** — 子模型超时或出错时，回退到人工确认
 
 ## 安装
@@ -23,3 +23,21 @@ pi install git:github.com/wangzexi/pi-auto-approve
 ```
 
 然后 `/reload` 即可生效。
+
+## 配置审查模型
+
+默认使用主模型（`defaultProvider`/`defaultModel`）。
+
+如果想指定专用审查模型（比如用更强的模型做审查），在 `~/.pi/agent/settings.json` 或项目 `.pi/settings.json` 中添加：
+
+```json
+{
+  "autoApprove": {
+    "model": "deepseek/deepseek-v4-pro"
+  }
+}
+```
+
+项目级配置（`.pi/settings.json`）优先级高于全局配置。
+
+格式为 `provider/modelId`，支持 pi 中已配置的任何模型。

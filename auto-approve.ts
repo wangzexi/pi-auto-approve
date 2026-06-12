@@ -8,10 +8,15 @@
  *   2. Auto-blocked: obviously dangerous (rm -rf, sudo, chmod 777)
  *   3. Needs review: everything else → call a subagent LLM to decide
  *
- * The reviewer subagent runs in-process via createAgentSession() (no subprocess)
- * and is locked to deepseek/deepseek-v4-flash.
+ * The reviewer subagent runs in-process via createAgentSession() (no subprocess).
+ *
+ * Configuration (optional):
+ *   Add to ~/.pi/agent/settings.json or .pi/settings.json:
+ *     "autoApprove": { "model": "deepseek/deepseek-v4-flash" }
+ *   If unset, falls back to defaultProvider/defaultModel.
  */
 
+import * as fs from "node:fs";
 import type { AssistantMessage, TextContent } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
@@ -149,10 +154,35 @@ async function reviewWithLLM(
     const prompt = buildReviewPrompt(command, cwd);
     const agentDir = getAgentDir();
 
-    // Lock to deepseek-v4-flash
+    // ── Resolve review model ──
+    // Priority: 1) autoApprove.model in project settings
+    //           2) autoApprove.model in global settings
+    //           3) defaultProvider/defaultModel
     const authStorage = AuthStorage.create(path.join(agentDir, "auth.json"));
     const modelRegistry = ModelRegistry.create(authStorage, path.join(agentDir, "models.json"));
-    const model = modelRegistry.find("deepseek", "deepseek-v4-flash");
+
+    function findReviewModel(): { provider: string; modelId: string } | undefined {
+        // Try project .pi/settings.json first
+        const projectSettingsPath = path.join(cwd, ".pi", "settings.json");
+        for (const sp of [projectSettingsPath, path.join(agentDir, "settings.json")]) {
+            try {
+                const raw = JSON.parse(fs.readFileSync(sp, "utf-8"));
+                const cfg = raw.autoApprove;
+                if (cfg?.model && typeof cfg.model === "string") {
+                    const parts = cfg.model.split("/");
+                    if (parts.length === 2) {
+                        return { provider: parts[0], modelId: parts[1] };
+                    }
+                }
+            } catch { /* file not found or invalid JSON */ }
+        }
+        return undefined;
+    }
+
+    const configured = findReviewModel();
+    const provider = configured?.provider ?? "deepseek";
+    const modelId = configured?.modelId ?? "deepseek-v4-flash";
+    const model = modelRegistry.find(provider, modelId);
 
     const { session } = await createAgentSession({
         cwd,
