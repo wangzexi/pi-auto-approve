@@ -1,18 +1,15 @@
 /**
  * pi-auto-approve
  *
- * Forked from pi-auto-reviewer (https://github.com/vinzenzu/pi-auto-reviewer)
- *
- * Changes from upstream:
- * - Uses createAgentSession() in-process instead of spawning a subprocess (faster)
- * - Locks reviewer model to deepseek/deepseek-v4-flash
- *
  * Auto-reviews bash commands before execution, similar to Codex's auto-reviewer.
  *
  * Three tiers:
  *   1. Auto-permitted: safe commands (ls, cd, grep, git status, etc.)
  *   2. Auto-blocked: obviously dangerous (rm -rf, sudo, chmod 777)
  *   3. Needs review: everything else → call a subagent LLM to decide
+ *
+ * The reviewer subagent runs in-process via createAgentSession() (no subprocess)
+ * and is locked to deepseek/deepseek-v4-flash.
  */
 
 import type { AssistantMessage, TextContent } from "@earendil-works/pi-ai";

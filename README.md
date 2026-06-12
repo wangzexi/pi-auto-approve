@@ -1,6 +1,6 @@
 # pi-auto-approve 🛡️
 
-自动审查危险命令的 Pi 扩展。Forked from [pi-auto-reviewer](https://github.com/vinzenzu/pi-auto-reviewer)。
+Auto-reviews bash commands before execution, similar to Codex's auto-reviewer.
 
 ## 三层防护
 
@@ -10,10 +10,11 @@
 | **2️⃣ 自动阻止** | 直接拒绝 | `rm -rf`, `sudo`, `chmod 777`, `git push --force` |
 | **3️⃣ 子模型审查 🎯** | 子模型独立决策 | `git commit`, `npm install`, `curl`, `mv`, `sed -i`, `cp` |
 
-## 与原版的区别
+## 特性
 
-- ✅ **进程内审查** — 使用 `createAgentSession()` 替代 `spawn()` 子进程，审查更快
+- ✅ **进程内审查** — 使用 `createAgentSession()` 进程内调用，不 fork 子进程，审查更快
 - ✅ **锁定模型** — 子模型固定 `deepseek/deepseek-v4-flash`，速度与成本可控
+- ✅ **超时降级** — 子模型超时或出错时，回退到人工确认
 
 ## 安装
 
