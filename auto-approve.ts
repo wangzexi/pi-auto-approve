@@ -5,18 +5,12 @@
  * itself with **full conversation context** (forked context, cache-friendly).
  *
  * Three tiers:
- *   1. Auto-permitted — safe commands (ls, cd, grep, git status, etc.)
- *   2. Auto-blocked   — catastrophic operations (rm -rf /, dd if=, mkfs.)
- *   3. Self-review    — everything else: inject a review message into the
- *                       existing conversation, let the model reconsider.
+ *   1. Auto-permitted — safe commands via regex (ls, cd, grep, etc.)
+ *   2. Auto-blocked   — catastrophic operations via regex (rm -rf /, mkfs.)
+ *   3. Self-review    — fork conversation, inject review prompt, let model decide
  *
- * Self-review prompt inspired by:
- *   - OpenAI Codex Guardian (open source: github.com/openai/codex)
- *   - Claude Code Auto Mode classifier (reverse-engineered)
- *   - Cursor Auto-review
- *
- * Approval/rejection reasons are appended to the tool result so they appear
- * in the conversation history — no separate notifications or status bars.
+ * Approval/rejection reasons are injected into the tool result so they
+ * appear in the conversation history — no separate notifications.
  */
 
 import { completeSimple } from "@earendil-works/pi-ai";

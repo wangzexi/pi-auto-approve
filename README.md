@@ -1,25 +1,23 @@
 # pi-auto-approve 🛡️
 
-Auto-reviews bash commands by asking the **same model** to double-check itself with **full conversation context**.
+让 Pi 在每次执行 bash 命令前**用完整对话上下文自省**，确认安全才放行。
 
 ## 三层防护
 
 | 层级 | 行为 | 示例 |
 |------|------|------|
-| **1️⃣ 自动放行** | 直接运行，零延迟 | `ls`, `cd`, `grep`, `git status`, `echo` |
-| **2️⃣ 自动阻止** | 直接拒绝 | `rm -rf /`, `dd if=/dev/`, `mkfs.`, fork bomb |
-| **3️⃣ 自省审查 🎯** | 注入消息让模型重新审视 | `rm -rf node_modules`, `npm install`, `curl`, `mv`, `git commit` |
+| **1️⃣ 自动放行** | 正则匹配，零延迟 | `ls`, `cd`, `grep`, `git status`, `echo` |
+| **2️⃣ 自动阻止** | 正则匹配，直接拒绝 | `rm -rf /`, `dd if=/dev/`, `mkfs.` |
+| **3️⃣ 自省审查** | 注入消息让模型用完整上下文重新审视 | `rm -rf node_modules`, `npm install`, `curl`, `git commit` |
 
-## 核心思路
+## 核心设计
 
-当模型想执行一条命令时不再单独 fork 子模型，而是：
+不同于其他工具的"独立子模型审查"，pi-auto-approve 的做法是：
 
 1. **Fork 当前对话上下文** — 同一模型、同一会话前缀，provider 缓存命中
-2. **注入一条消息**：*"再想想，这个命令安全吗？是不是注入攻击？"*
-3. **模型用完整上下文自省**，给出 `CONFIRM` 或 `REJECT`
-4. **根据模型自己的判断**决定放行或阻止
-
-这样 `rm -rf node_modules` 在 Node.js 项目里会被正确放行，因为模型看到了完整的对话上下文。
+2. **注入一条自省提示** — 让模型用完整对话重新审视即将执行的命令
+3. **模型自省** — 考虑风险等级、用户意图、注入风险、替代方案
+4. **结果注入工具输出** — 审批记录直接显示在会话历史中，无需额外通知
 
 ## 安装
 
@@ -28,3 +26,7 @@ pi install git:github.com/wangzexi/pi-auto-approve
 ```
 
 然后 `/reload` 即可生效。
+
+## 配置
+
+零配置，开箱即用。审查使用当前对话的同一模型。
