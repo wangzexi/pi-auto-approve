@@ -188,8 +188,7 @@ export default function (pi: ExtensionAPI) {
             // Timeout via Promise.race (more reliable than AbortSignal for some providers)
             const reviewPromise = completeSimple(ctx.model, { messages: reviewCtx }, {
                 apiKey: auth.ok ? auth.apiKey : undefined,
-                reasoning: "minimal",
-                thinkingBudgets: { minimal: 256 },
+                reasoning: "medium",
             }).then((message) => {
                 const text = message.content
                     .filter((p): p is TextContent => p.type === "text")
@@ -223,7 +222,7 @@ export default function (pi: ExtensionAPI) {
             }
 
             if (decision.allowed) {
-                ctx.ui.notify(`Auto-approve: ✓ ${decision.reason}`, "info");
+                // Auto-approved — silent, no notification
                 return undefined;
             } else {
                 ctx.ui.notify(`Auto-approve: ✗ ${decision.reason}`, "warning");
