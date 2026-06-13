@@ -91,7 +91,11 @@ function buildReviewContext(
         if (entry.type !== "message") continue;
         const msg = entry.message;
         if (msg.role === "user" || msg.role === "assistant") {
-            messages.push({ role: msg.role, content: msg.content as Message["content"] });
+            const content = msg.content as Message["content"];
+            const textOnly = Array.isArray(content)
+                ? content.filter((b: any) => b.type === "text" || b.type === "thinking")
+                : content;
+            messages.push({ role: msg.role, content: textOnly });
         }
     }
     messages.push({
