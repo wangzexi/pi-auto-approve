@@ -172,10 +172,10 @@ export default function (pi: ExtensionAPI) {
             if (!result) {
                 const blocks = fullMsg?.content ?? [];
                 const types = blocks.map((b: any) => b.type).join(",");
-                // Show tool call details if present
                 const tc = blocks.find((b: any) => b.type === "toolCall");
                 const toolInfo = tc ? `tool=${tc.name} args=${JSON.stringify(tc.arguments)}` : "no toolCall";
-                toolCallDecisions.set(event.toolCallId, `🛡️ Review unclear (${types}) — ${toolInfo}`);
+                const snippet = JSON.stringify(fullMsg).slice(0, 300);
+                toolCallDecisions.set(event.toolCallId, `🛡️ Review unclear (${types}) — ${toolInfo} msg=${snippet}`);
                 return undefined;
             }
 
