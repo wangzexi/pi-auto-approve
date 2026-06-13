@@ -192,7 +192,7 @@ export default function (pi: ExtensionAPI) {
             });
 
             const timeoutPromise = new Promise<string>((_, reject) =>
-                setTimeout(() => reject(new Error("Review timed out")), 12000)
+                setTimeout(() => reject(new Error("Review timed out")), 25000)
             );
 
             let text: string;
