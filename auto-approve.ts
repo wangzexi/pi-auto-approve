@@ -137,22 +137,24 @@ export default function (pi: ExtensionAPI) {
                 setTimeout(() => reject(new Error("Review timed out")), 30000)
             );
 
+            interface ReviewResult { verdict: string; reason: string }
+            let fullMsg: any = null;
             const reviewPromise = complete(ctx.model, {
                 messages,
                 tools,
             }, {
                 apiKey: auth.ok ? auth.apiKey : undefined,
             }).then((msg) => {
-                // Find the tool call in the assistant response
+                fullMsg = msg;
                 for (const block of msg.content) {
                     if (block.type === "toolCall" && block.name === "auto_approve_result") {
-                        return block.arguments as { verdict: string; reason: string };
+                        return block.arguments as ReviewResult;
                     }
                 }
                 return null;
             });
 
-            let result: { verdict: string; reason: string } | null;
+            let result: ReviewResult | null;
             try {
                 result = await Promise.race([reviewPromise, timeoutPromise]);
             } catch {
@@ -164,7 +166,9 @@ export default function (pi: ExtensionAPI) {
             ctx.ui.setStatus("auto-approve", undefined);
 
             if (!result) {
-                toolCallDecisions.set(event.toolCallId, "🛡️ Review unclear — allowed");
+                const types = (fullMsg?.content ?? []).map((b: any) => b.type).join(",");
+                const snippet = JSON.stringify((fullMsg?.content ?? []).slice(0, 3)).slice(0, 400);
+                toolCallDecisions.set(event.toolCallId, `🛡️ Review unclear (${types}) — allowed ${snippet}`);
                 return undefined;
             }
 
