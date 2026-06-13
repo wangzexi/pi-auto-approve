@@ -111,25 +111,22 @@ function parseXmlVerdict(text: string): { allowed: boolean; reason: string } | n
 
 function buildReviewContext(
     sessionManager: { getBranch(): Array<{ type: string; message: { role: string; content: unknown } }> },
+    systemPrompt: string | undefined,
     command: string,
-): Message[] {
+): { systemPrompt?: string; messages: Message[] } {
     const messages: Message[] = [];
     for (const entry of sessionManager.getBranch()) {
         if (entry.type !== "message") continue;
-        const msg = entry.message;
-        if (msg.role === "user" || msg.role === "assistant") {
-            const content = msg.content as Message["content"];
-            const textOnly = Array.isArray(content)
-                ? content.filter((b: any) => b.type === "text" || b.type === "thinking")
-                : content;
-            messages.push({ role: msg.role, content: textOnly });
-        }
+        const msg = entry.message as Message;
+        // Include ALL roles (user, assistant, toolResult) to keep prefix identical
+        // and ALL content types so provider's prefix cache matches the main conversation
+        messages.push({ role: msg.role, content: msg.content });
     }
     messages.push({
         role: "user",
         content: [{ type: "text" as const, text: buildReviewPrompt(command) }],
     });
-    return messages;
+    return { systemPrompt, messages };
 }
 
 export default function (pi: ExtensionAPI) {
@@ -158,7 +155,7 @@ export default function (pi: ExtensionAPI) {
         ctx.ui.setStatus("auto-approve", `Reviewing: ${command.slice(0, 60)}...`);
 
         try {
-            const messages = buildReviewContext(ctx.sessionManager, command);
+            const { systemPrompt, messages } = buildReviewContext(ctx.sessionManager, ctx.getSystemPrompt(), command);
             const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
             const timeoutPromise = new Promise<string>((_, reject) =>
                 setTimeout(() => reject(new Error("Review timed out")), 30000)
@@ -173,7 +170,7 @@ export default function (pi: ExtensionAPI) {
                         headers: auth?.headers,
                     };
                     if (reasoning) options.reasoning = reasoning;
-                    msg = await Promise.race([completeSimple(ctx.model, { messages }, options), timeoutPromise]);
+                    msg = await Promise.race([completeSimple(ctx.model, { systemPrompt, messages }, options), timeoutPromise]);
                     const errorMessage = String(msg?.errorMessage || "");
                     if (msg?.stopReason !== "error") break;
                     if (!/unsupported value|not supported/i.test(errorMessage)) break;
@@ -202,10 +199,14 @@ export default function (pi: ExtensionAPI) {
             }
 
             if (decision.allowed) {
-                toolCallDecisions.set(event.toolCallId, `🛡️ ${decision.reason}`);
+                const u = msg?.usage as { cacheRead?: number; input?: number; cacheWrite?: number } | undefined;
+                const cacheNote = u ? ` [cache: in=${u.input ?? 0} rd=${u.cacheRead ?? 0} wr=${u.cacheWrite ?? 0}]` : ' [no usage]';
+                toolCallDecisions.set(event.toolCallId, `🛡️ ${decision.reason}${cacheNote}`);
                 return undefined;
             }
-            return { block: true, reason: `🛡️ ${decision.reason}` };
+            const u = msg?.usage as { cacheRead?: number; input?: number; cacheWrite?: number } | undefined;
+            const cacheNote = u ? ` [cache: in=${u.input ?? 0} rd=${u.cacheRead ?? 0} wr=${u.cacheWrite ?? 0}]` : ' [no usage]';
+            return { block: true, reason: `🛡️ ${decision.reason}${cacheNote}` };
         } catch {
             ctx.ui.setStatus("auto-approve", undefined);
             toolCallDecisions.set(event.toolCallId, "🛡️ Review error — allowed");
