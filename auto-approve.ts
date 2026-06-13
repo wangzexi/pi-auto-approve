@@ -166,9 +166,12 @@ export default function (pi: ExtensionAPI) {
             ctx.ui.setStatus("auto-approve", undefined);
 
             if (!result) {
-                const types = (fullMsg?.content ?? []).map((b: any) => b.type).join(",");
-                const snippet = JSON.stringify((fullMsg?.content ?? []).slice(0, 3)).slice(0, 400);
-                toolCallDecisions.set(event.toolCallId, `🛡️ Review unclear (${types}) — allowed ${snippet}`);
+                const blocks = fullMsg?.content ?? [];
+                const types = blocks.map((b: any) => b.type).join(",");
+                // Show tool call details if present
+                const tc = blocks.find((b: any) => b.type === "toolCall");
+                const toolInfo = tc ? `tool=${tc.name} args=${JSON.stringify(tc.arguments)}` : "no toolCall";
+                toolCallDecisions.set(event.toolCallId, `🛡️ Review unclear (${types}) — ${toolInfo}`);
                 return undefined;
             }
 
