@@ -70,11 +70,43 @@ function buildReviewPrompt(command: string): string {
 }
 
 function parseXmlVerdict(text: string): { allowed: boolean; reason: string } | null {
-    const verdictMatch = text.match(/<verdict>\s*(allow|block)\s*<\/verdict>/i);
-    if (!verdictMatch) return null;
-    const allowed = verdictMatch[1].toLowerCase() === "allow";
-    const reasonMatch = text.match(/<reason>([\s\S]*?)<\/reason>/i);
-    const reason = reasonMatch ? reasonMatch[1].trim() : "no reason given";
+    const normalized = text
+        .replace(/```xml|```/gi, "")
+        .replace(/&lt;/gi, "<")
+        .replace(/&gt;/gi, ">")
+        .replace(/&amp;/gi, "&")
+        .replace(/&quot;/gi, '"')
+        .replace(/&#39;/gi, "'");
+
+    const verdictPatterns = [
+        /<(?:verdict|decision|result)>\s*([\s\S]*?)\s*<\/(?:verdict|decision|result)>/i,
+        /<(?:auto_approve_result|review_result)[^>]*\sverdict=["']([^"']+)["'][^>]*>/i,
+    ];
+    const verdictRaw = verdictPatterns
+        .map((pattern) => normalized.match(pattern)?.[1]?.trim())
+        .find(Boolean)
+        ?.toLowerCase();
+
+    if (!verdictRaw) return null;
+
+    const allowWords = ["allow", "approve", "approved", "confirm", "confirmed", "yes", "safe", "ok"];
+    const blockWords = ["block", "reject", "rejected", "deny", "denied", "no", "unsafe"];
+
+    const allowed = allowWords.some((word) => verdictRaw.includes(word))
+        ? true
+        : blockWords.some((word) => verdictRaw.includes(word))
+          ? false
+          : null;
+    if (allowed === null) return null;
+
+    const reasonPatterns = [
+        /<(?:reason|note|why)>\s*([\s\S]*?)\s*<\/(?:reason|note|why)>/i,
+        /<(?:auto_approve_result|review_result)[^>]*\sreason=["']([^"']+)["'][^>]*>/i,
+    ];
+    const reason = reasonPatterns
+        .map((pattern) => normalized.match(pattern)?.[1]?.trim())
+        .find(Boolean) || (allowed ? "approved" : "blocked by review");
+
     return { allowed, reason };
 }
 
