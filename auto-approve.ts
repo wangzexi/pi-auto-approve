@@ -191,12 +191,16 @@ export default function (pi: ExtensionAPI) {
                 return text || "";
             });
 
+            const timeoutPromise = new Promise<string>((_, reject) =>
+                setTimeout(() => reject(new Error("Review timed out")), 30000)
+            );
+
             let text: string;
             try {
-                text = await reviewPromise;
+                text = await Promise.race([reviewPromise, timeoutPromise]);
             } catch {
                 ctx.ui.setStatus("auto-approve", undefined);
-                toolCallDecisions.set(event.toolCallId, "🛡️ Review failed — allowed");
+                toolCallDecisions.set(event.toolCallId, "🛡️ Review timed out — allowed");
                 return undefined;
             }
 
