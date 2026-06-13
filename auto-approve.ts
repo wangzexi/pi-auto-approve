@@ -48,7 +48,6 @@ const AUTO_BLOCKED = [
     /:\(\)\s*\{/,
     /\bdd\s+if=\/dev/,
     /\bmkfs\./,
-    />\s*\/dev\//,
 ];
 
 const toolCallDecisions = new Map<string, string>();
