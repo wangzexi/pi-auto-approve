@@ -16,7 +16,7 @@
 
 import { completeSimple } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { Message, TextContent } from "@earendil-works/pi-ai";
+import type { Message, TextContent, Tool } from "@earendil-works/pi-ai";
 
 // ── Tier 1: Auto-permitted ──
 const AUTO_PERMITTED = [
@@ -162,6 +162,12 @@ export default function (pi: ExtensionAPI) {
             );
 
             const sessionId = ctx.sessionManager.getSessionId();
+            // Build context matching main conversation: include active tool definitions for cache affinity
+            const activeToolNames = pi.getActiveTools();
+            const allTools = pi.getAllTools();
+            const tools: Tool[] = allTools
+                .filter((t) => activeToolNames.includes(t.name))
+                .map((t) => ({ name: t.name, description: t.description, parameters: t.parameters }));
             const reasoningCandidates: Array<"minimal" | "low" | undefined> = ["minimal", "low", undefined];
             let msg: any = null;
             try {
@@ -173,7 +179,7 @@ export default function (pi: ExtensionAPI) {
                         sessionId,
                     };
                     if (reasoning) options.reasoning = reasoning;
-                    msg = await Promise.race([completeSimple(ctx.model, { systemPrompt, messages }, options), timeoutPromise]);
+                    msg = await Promise.race([completeSimple(ctx.model, { systemPrompt, messages, tools }, options), timeoutPromise]);
                     const errorMessage = String(msg?.errorMessage || "");
                     if (msg?.stopReason !== "error") break;
                     if (!/unsupported value|not supported/i.test(errorMessage)) break;
