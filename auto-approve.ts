@@ -161,6 +161,7 @@ export default function (pi: ExtensionAPI) {
                 setTimeout(() => reject(new Error("Review timed out")), 30000)
             );
 
+            const sessionId = ctx.sessionManager.getSessionId();
             const reasoningCandidates: Array<"minimal" | "low" | undefined> = ["minimal", "low", undefined];
             let msg: any = null;
             try {
@@ -168,6 +169,8 @@ export default function (pi: ExtensionAPI) {
                     const options: any = {
                         apiKey: auth?.apiKey,
                         headers: auth?.headers,
+                        cacheRetention: "short",
+                        sessionId,
                     };
                     if (reasoning) options.reasoning = reasoning;
                     msg = await Promise.race([completeSimple(ctx.model, { systemPrompt, messages }, options), timeoutPromise]);
