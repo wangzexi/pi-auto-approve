@@ -209,7 +209,8 @@ export default function (pi: ExtensionAPI) {
             const decision = text ? parseDecision(text) : null;
 
             if (!decision) {
-                toolCallDecisions.set(event.toolCallId, "🛡️ Review unclear — allowed");
+                const snippet = (text || "(empty)").slice(0, 200);
+                toolCallDecisions.set(event.toolCallId, `🛡️ Review unclear — allowed (raw: ${snippet})`);
                 return undefined;
             }
 
