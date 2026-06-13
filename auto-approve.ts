@@ -5,33 +5,18 @@
  * itself with **full conversation context** (forked context, cache-friendly).
  *
  * Three tiers:
- *   1. Auto-permitted — safe commands (ls, cd, grep, etc.)
- *   2. Auto-blocked   — catastrophic operations (rm -rf /, mkfs.)
+ *   1. Auto-permitted — safe commands via regex (ls, cd, grep, etc.)
+ *   2. Auto-blocked   — catastrophic operations via regex (rm -rf /, mkfs.)
  *   3. Self-review    — fork conversation, inject review prompt,
- *                       model responds via tool call (structured output)
+ *                       model responds with XML verdict tags
  *
  * The review result is injected into the tool output so it appears
  * in the conversation history — no separate notifications.
  */
 
-import { complete } from "@earendil-works/pi-ai";
+import { completeSimple } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { Message, Tool } from "@earendil-works/pi-ai";
-import { Type } from "typebox";
-
-// ── Review tool definition ──
-// The model MUST call this tool to report its review decision.
-const reviewTool: Tool = {
-    name: "auto_approve_result",
-    description: "Report the auto-approve review decision for the bash command",
-    parameters: Type.Object({
-        verdict: Type.Union(
-            [Type.Literal("allow"), Type.Literal("block")],
-            { description: "allow = safe to run, block = risky or unauthorized" },
-        ),
-        reason: Type.String({ description: "Brief explanation of the decision" }),
-    }),
-};
+import type { Message, TextContent } from "@earendil-works/pi-ai";
 
 // ── Tier 1: Auto-permitted ──
 const AUTO_PERMITTED = [
@@ -69,23 +54,34 @@ const AUTO_BLOCKED = [
 // ── Staging area: decisions to inject into tool results ──
 const toolCallDecisions = new Map<string, string>();
 
-// ── Review prompt (XML tags, tool-based response) ──
+// ── Review prompt (XML verdict output) ──
 function buildReviewPrompt(command: string): string {
     return [
         `<auto-approve>`,
         `  <command>${command}</command>`,
         `</auto-approve>`,
         ``,
-        `Review this command against the conversation context.`,
-        `Call the "auto_approve_result" tool with your verdict.`,
+        `Review this command. Reply with XML tags:`,
+        `<verdict>allow</verdict>  OR  <verdict>block</verdict>`,
+        `<reason>brief explanation</reason>`,
     ].join("\n");
 }
 
-// ── Build conversation context ──
+// ── Parse XML verdict from response ──
+function parseXmlVerdict(text: string): { allowed: boolean; reason: string } | null {
+    const verdictMatch = text.match(/<verdict>\s*(allow|block)\s*<\/verdict>/i);
+    if (!verdictMatch) return null;
+    const allowed = verdictMatch[1].toLowerCase() === "allow";
+    const reasonMatch = text.match(/<reason>([^<]*)<\/reason>/i);
+    const reason = reasonMatch ? reasonMatch[1].trim() : "no reason given";
+    return { allowed, reason };
+}
+
+// ── Build conversation context (text-only messages) ──
 function buildReviewContext(
     sessionManager: { getBranch(): Array<{ type: string; message: { role: string; content: unknown } }> },
     command: string,
-): { messages: Message[]; tools: Tool[] } {
+): Message[] {
     const messages: Message[] = [];
     for (const entry of sessionManager.getBranch()) {
         if (entry.type !== "message") continue;
@@ -100,9 +96,9 @@ function buildReviewContext(
     }
     messages.push({
         role: "user",
-        content: [{ type: "text", text: buildReviewPrompt(command) }],
+        content: [{ type: "text" as const, text: buildReviewPrompt(command) }],
     });
-    return { messages, tools: [reviewTool] };
+    return messages;
 }
 
 export default function (pi: ExtensionAPI) {
@@ -134,33 +130,24 @@ export default function (pi: ExtensionAPI) {
         ctx.ui.setStatus("auto-approve", `Reviewing: ${command.slice(0, 60)}...`);
 
         try {
-            const { messages, tools } = buildReviewContext(ctx.sessionManager, command);
-            const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
+            const messages = buildReviewContext(ctx.sessionManager, command);
 
-            const timeoutPromise = new Promise<never>((_, reject) =>
+            const timeoutPromise = new Promise<string>((_, reject) =>
                 setTimeout(() => reject(new Error("Review timed out")), 30000)
             );
 
-            interface ReviewResult { verdict: string; reason: string }
-            let fullMsg: any = null;
-            const reviewPromise = complete(ctx.model, {
-                messages,
-                tools,
-            }, {
-                apiKey: auth.ok ? auth.apiKey : undefined,
-            }).then((msg) => {
-                fullMsg = msg;
-                for (const block of msg.content) {
-                    if (block.type === "toolCall" && block.name === "auto_approve_result") {
-                        return block.arguments as ReviewResult;
-                    }
-                }
-                return null;
-            });
+            const reviewText = completeSimple(ctx.model, { messages }, { reasoning: "minimal" })
+                .then((msg) => {
+                    const text = msg.content
+                        .filter((p): p is TextContent => p.type === "text")
+                        .map((p) => p.text)
+                        .join("");
+                    return text || "";
+                });
 
-            let result: ReviewResult | null;
+            let text: string;
             try {
-                result = await Promise.race([reviewPromise, timeoutPromise]);
+                text = await Promise.race([reviewText, timeoutPromise]);
             } catch {
                 ctx.ui.setStatus("auto-approve", undefined);
                 toolCallDecisions.set(event.toolCallId, "🛡️ Review timed out — allowed");
@@ -169,21 +156,18 @@ export default function (pi: ExtensionAPI) {
 
             ctx.ui.setStatus("auto-approve", undefined);
 
-            if (!result) {
-                const blocks = fullMsg?.content ?? [];
-                const types = blocks.map((b: any) => b.type).join(",");
-                const tc = blocks.find((b: any) => b.type === "toolCall");
-                const toolInfo = tc ? `tool=${tc.name} args=${JSON.stringify(tc.arguments)}` : "no toolCall";
-                const snippet = JSON.stringify(fullMsg).slice(0, 300);
-                toolCallDecisions.set(event.toolCallId, `🛡️ Review unclear (${types}) — ${toolInfo} msg=${snippet}`);
+            const decision = text ? parseXmlVerdict(text) : null;
+
+            if (!decision) {
+                toolCallDecisions.set(event.toolCallId, "🛡️ Review unclear — allowed");
                 return undefined;
             }
 
-            if (result.verdict === "allow") {
-                toolCallDecisions.set(event.toolCallId, `🛡️ ${result.reason}`);
+            if (decision.allowed) {
+                toolCallDecisions.set(event.toolCallId, `🛡️ ${decision.reason}`);
                 return undefined;
             } else {
-                return { block: true, reason: `🛡️ ${result.reason}` };
+                return { block: true, reason: `🛡️ ${decision.reason}` };
             }
         } catch {
             ctx.ui.setStatus("auto-approve", undefined);
