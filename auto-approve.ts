@@ -109,12 +109,15 @@ function buildReviewPrompt(command: string): string {
         "",
         "Based on my full understanding of the conversation:",
         "",
-        "- **CONFIRM: <reason>** — the command is clearly safe and appropriate",
-        "  in this context. Include why it's fine.",
-        "- **REJECT: <reason>** — the command is risky, out of scope, or",
-        "  unnecessary. Suggest a safer alternative.",
+        "Reply with EXACTLY ONE line, starting with CONFIRM: or REJECT:",
         "",
-        "I will not run any tools — just think and respond.",
+        "CONFIRM: <brief reason>  — if the command is safe and appropriate",
+        "REJECT: <reason>         — if the command is risky or unnecessary",
+        "",
+        "Example: CONFIRM: removing node_modules is standard maintenance",
+        "Example: REJECT: this deletes system files outside project scope",
+        "",
+        "No other text, no explanations, no thinking aloud.",]
     ].join("\n");
 }
 
@@ -209,8 +212,7 @@ export default function (pi: ExtensionAPI) {
             const decision = text ? parseDecision(text) : null;
 
             if (!decision) {
-                const snippet = (text || "(empty)").slice(0, 200);
-                toolCallDecisions.set(event.toolCallId, `🛡️ Review unclear — allowed (raw: ${snippet})`);
+                toolCallDecisions.set(event.toolCallId, "🛡️ Review unclear — allowed");
                 return undefined;
             }
 
