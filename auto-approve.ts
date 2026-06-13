@@ -41,7 +41,7 @@ const AUTO_PERMITTED = [
 
 // ── Tier 2: Auto-blocked ──
 const AUTO_BLOCKED = [
-    /\brm\s+(-rf?|--recursive)\s+\/\b/,
+    /\brm\s+(-rf?|--recursive)\s+\/(?:\s|$)/,
     /\brm\s+(-rf?|--recursive)\s+\/etc\b/,
     /\brm\s+(-rf?|--recursive)\s+\/usr\b/,
     /\brm\s+(-rf?|--recursive)\s+\/var\b/,
@@ -160,19 +160,25 @@ export default function (pi: ExtensionAPI) {
 
         try {
             const messages = buildReviewContext(ctx.sessionManager, command);
+            const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
             const timeoutPromise = new Promise<string>((_, reject) =>
                 setTimeout(() => reject(new Error("Review timed out")), 30000)
             );
 
-            const reviewText = completeSimple(ctx.model, { messages }, { reasoning: "minimal" })
-                .then((msg) => msg.content
-                    .filter((p): p is TextContent => p.type === "text")
-                    .map((p) => p.text)
-                    .join(""));
-
-            let text: string;
+            const reasoningCandidates: Array<"minimal" | "low" | undefined> = ["minimal", "low", undefined];
+            let msg: any = null;
             try {
-                text = await Promise.race([reviewText, timeoutPromise]);
+                for (const reasoning of reasoningCandidates) {
+                    const options: any = {
+                        apiKey: auth?.apiKey,
+                        headers: auth?.headers,
+                    };
+                    if (reasoning) options.reasoning = reasoning;
+                    msg = await Promise.race([completeSimple(ctx.model, { messages }, options), timeoutPromise]);
+                    const errorMessage = String(msg?.errorMessage || "");
+                    if (msg?.stopReason !== "error") break;
+                    if (!/unsupported value|not supported/i.test(errorMessage)) break;
+                }
             } catch {
                 ctx.ui.setStatus("auto-approve", undefined);
                 toolCallDecisions.set(event.toolCallId, "🛡️ Review timed out — allowed");
@@ -181,6 +187,15 @@ export default function (pi: ExtensionAPI) {
 
             ctx.ui.setStatus("auto-approve", undefined);
 
+            if (msg?.stopReason === "error") {
+                toolCallDecisions.set(event.toolCallId, "🛡️ Review error — allowed");
+                return undefined;
+            }
+
+            const text = msg.content
+                .filter((p): p is TextContent => p.type === "text")
+                .map((p) => p.text)
+                .join("");
             const decision = text ? parseXmlVerdict(text) : null;
             if (!decision) {
                 toolCallDecisions.set(event.toolCallId, "🛡️ Review unclear — allowed");
