@@ -182,7 +182,7 @@ export default function (pi: ExtensionAPI) {
 
             const reviewPromise = completeSimple(ctx.model, { messages: reviewCtx }, {
                 apiKey: auth.ok ? auth.apiKey : undefined,
-                reasoning: "medium",
+                reasoning: "minimal",
             }).then((message) => {
                 const text = message.content
                     .filter((p): p is TextContent => p.type === "text")
@@ -191,17 +191,12 @@ export default function (pi: ExtensionAPI) {
                 return text || "";
             });
 
-            const timeoutPromise = new Promise<string>((_, reject) =>
-                setTimeout(() => reject(new Error("Review timed out")), 25000)
-            );
-
             let text: string;
             try {
-                text = await Promise.race([reviewPromise, timeoutPromise]);
+                text = await reviewPromise;
             } catch {
                 ctx.ui.setStatus("auto-approve", undefined);
-                // Fail-open: allow through, inject a note
-                toolCallDecisions.set(event.toolCallId, "🛡️ Review timed out — allowed");
+                toolCallDecisions.set(event.toolCallId, "🛡️ Review failed — allowed");
                 return undefined;
             }
 
