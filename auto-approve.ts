@@ -55,16 +55,16 @@ const toolCallDecisions = new Map<string, string>();
 function buildReviewPrompt(command: string): string {
     return [
         `<auto-approve>`,
+        `<auto-approve>`,
         `  <command>${command}</command>`,
         `</auto-approve>`,
         ``,
         `Review this command against the full conversation context.`,
-        `Reply with EXACTLY this XML shape and nothing else:`,
+        `Reply with EXACTLY this XML shape and nothing else: No markdown, no prose.`,
         `<auto_approve_result>`,
         `  <verdict>allow</verdict> OR <verdict>block</verdict>`,
-        `  <reason>brief explanation</reason>`,
+        `  <reason>one short phrase, 3-8 words</reason>`,
         `</auto_approve_result>`,
-        `No markdown. No prose before or after. No explanations outside XML.`,
     ].join("\n");
 }
 
@@ -208,14 +208,10 @@ export default function (pi: ExtensionAPI) {
             }
 
             if (decision.allowed) {
-                const u = msg?.usage as { cacheRead?: number; input?: number; cacheWrite?: number } | undefined;
-                const cacheNote = u ? ` [cache: in=${u.input ?? 0} rd=${u.cacheRead ?? 0} wr=${u.cacheWrite ?? 0}]` : ' [no usage]';
-                toolCallDecisions.set(event.toolCallId, `🛡️ ${decision.reason}${cacheNote}`);
+                // Allowed: no injection needed, model's own response suffices
                 return undefined;
             }
-            const u = msg?.usage as { cacheRead?: number; input?: number; cacheWrite?: number } | undefined;
-            const cacheNote = u ? ` [cache: in=${u.input ?? 0} rd=${u.cacheRead ?? 0} wr=${u.cacheWrite ?? 0}]` : ' [no usage]';
-            return { block: true, reason: `🛡️ ${decision.reason}${cacheNote}` };
+            return { block: true, reason: `🛡️ ${decision.reason}` };
         } catch {
             ctx.ui.setStatus("auto-approve", undefined);
             toolCallDecisions.set(event.toolCallId, "🛡️ Review error — allowed");
