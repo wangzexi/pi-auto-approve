@@ -138,7 +138,7 @@ export default function (pi: ExtensionAPI) {
 
         for (const pattern of AUTO_BLOCKED) {
             if (pattern.test(command)) {
-                return { block: true, reason: `🛡️ Auto-blocked: ${pattern.source}` };
+                return { block: true, reason: `Auto-blocked: ${pattern.source}` };
             }
         }
 
@@ -149,7 +149,7 @@ export default function (pi: ExtensionAPI) {
         }
 
         if (!ctx.hasUI || !ctx.model || !ctx.modelRegistry) {
-            return { block: true, reason: "🛡️ Requires review (non-interactive mode)" };
+            return { block: true, reason: "Requires review (non-interactive mode)" };
         }
 
         ctx.ui.setStatus("auto-approve", `Reviewing: ${command.slice(0, 60)}...`);
@@ -186,14 +186,14 @@ export default function (pi: ExtensionAPI) {
                 }
             } catch {
                 ctx.ui.setStatus("auto-approve", undefined);
-                toolCallDecisions.set(event.toolCallId, "🛡️ Review timed out — allowed");
+                toolCallDecisions.set(event.toolCallId, "Review timed out — allowed");
                 return undefined;
             }
 
             ctx.ui.setStatus("auto-approve", undefined);
 
             if (msg?.stopReason === "error") {
-                toolCallDecisions.set(event.toolCallId, "🛡️ Review error — allowed");
+                toolCallDecisions.set(event.toolCallId, "Review error — allowed");
                 return undefined;
             }
 
@@ -203,7 +203,7 @@ export default function (pi: ExtensionAPI) {
                 .join("");
             const decision = text ? parseXmlVerdict(text) : null;
             if (!decision) {
-                toolCallDecisions.set(event.toolCallId, "🛡️ Review unclear — allowed");
+                toolCallDecisions.set(event.toolCallId, "Review unclear — allowed");
                 return undefined;
             }
 
@@ -211,10 +211,10 @@ export default function (pi: ExtensionAPI) {
                 // Allowed: no injection needed, model's own response suffices
                 return undefined;
             }
-            return { block: true, reason: `🛡️ ${decision.reason}` };
+            return { block: true, reason: `${decision.reason}` };
         } catch {
             ctx.ui.setStatus("auto-approve", undefined);
-            toolCallDecisions.set(event.toolCallId, "🛡️ Review error — allowed");
+            toolCallDecisions.set(event.toolCallId, "Review error — allowed");
             return undefined;
         }
     });
