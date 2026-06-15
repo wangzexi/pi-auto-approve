@@ -208,7 +208,8 @@ export default function (pi: ExtensionAPI) {
             }
 
             if (decision.allowed) {
-                // Allowed: no injection needed, model's own response suffices
+                // Allowed: notify in TUI but don't inject into tool result
+                if (ctx.hasUI) ctx.ui.notify(decision.reason, "success");
                 return undefined;
             }
             return { block: true, reason: `${decision.reason}` };
