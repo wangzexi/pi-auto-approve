@@ -2,16 +2,17 @@
  * pi-auto-approve
  *
  * Auto-reviews bash commands by asking the **same model** to double-check
- * itself with **full conversation context** (forked context, cache-friendly).
+ * itself with **full conversation context** (cache-friendly).
  *
  * Three tiers:
  *   1. Auto-permitted — safe commands via regex (ls, cd, grep, etc.)
  *   2. Auto-blocked   — catastrophic operations via regex (rm -rf /, mkfs.)
- *   3. Self-review    — fork conversation, inject review prompt,
- *                       model responds with XML verdict tags
+ *   3. Self-review    — first-class cache: systemPrompt + sessionId + tools
+ *                       fed to completeSimple; same model, same prefix,
+ *                       88%+ cache hit rate vs main conversation.
  *
- * The review result is injected into the tool output so it appears
- * in the conversation history — no separate notifications.
+ * Pass = TUI notify, no tool result pollution.
+ * Block = reason sent back to model.
  */
 
 import { completeSimple } from "@earendil-works/pi-ai";
