@@ -51,6 +51,7 @@ const AUTO_BLOCKED = [
 ];
 
 const toolCallDecisions = new Map<string, string>();
+let autoApproveEnabled = true;
 
 function buildReviewPrompt(command: string): string {
     return [
@@ -130,8 +131,17 @@ function buildReviewContext(
 }
 
 export default function (pi: ExtensionAPI) {
+    pi.registerCommand("autoapprove", {
+        description: "Toggle auto-approve on/off",
+        handler: async (_args, ctx) => {
+            autoApproveEnabled = !autoApproveEnabled;
+            ctx.ui.notify(`auto-approve: ${autoApproveEnabled ? "on" : "off"}`, "info");
+        },
+    });
+
     pi.on("tool_call", async (event, ctx) => {
         if (event.toolName !== "bash") return undefined;
+        if (!autoApproveEnabled) return undefined;
 
         const command = (event.input.command as string).trim();
         if (!command) return undefined;
