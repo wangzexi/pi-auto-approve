@@ -1,6 +1,6 @@
 {
   "name": "pi-auto-approve",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "让 Pi 在每次执行 bash 命令前用完整对话上下文自省，确认安全才放行",
   "keywords": ["pi-package"],
   "license": "MIT",
