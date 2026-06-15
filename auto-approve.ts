@@ -35,8 +35,6 @@ const AUTO_PERMITTED = [
     /^(echo|printenv|env|whoami|hostname|uname|uptime|id|groups|pwd|date)\b/,
     /^(python3?|node|uv|tsx|npx)\s+(--version|-v|--help|-h)$/,
     /^.*\s+(--help|-h)\s*$/,
-    /^echo\s/,
-    /^pwd\b/,
 ];
 
 // ── Tier 2: Auto-blocked ──
@@ -55,7 +53,6 @@ let autoApproveEnabled = true;
 
 function buildReviewPrompt(command: string): string {
     return [
-        `<auto-approve>`,
         `<auto-approve>`,
         `  <command>${command}</command>`,
         `</auto-approve>`,
