@@ -1,6 +1,6 @@
 # pi-auto-approve
 
-让 Pi 在每次执行 bash 命令前**用完整对话上下文自省**，确认安全才放行。
+让 Pi 在每次执行 bash 命令前**用当前对话文本上下文自省**，确认安全才放行。
 
 ## 三层防护
 
@@ -16,10 +16,12 @@
 
 1. **同模型自省** — 用当前对话的同一模型、同一会话前缀重新审查即将执行的命令
 2. **缓存友好** — 审查请求复用主会话前缀（系统提示词、历史消息、sessionId），通常更有利于前缀缓存命中
-3. **模型自省** — 模型基于完整对话考虑风险等级、用户意图、注入风险、替代方案
+3. **模型自省** — 模型基于对话文本考虑风险等级、用户意图、注入风险、替代方案
 4. **结果不注入** — 通过的命令不注入任何审批记录，模型看不到审查存在；被阻止的命令直接返回原因
 
-审查请求是以 `role:"user"` 的 XML 包裹消息提交，示例结构如下（固定边界便于模型定位）：
+审查请求克隆当前分支中的文本消息，并过滤工具调用轨迹（assistant toolCall 和 toolResult），再追加一条 `role:"user"` 的 XML 包裹消息。这样审查基于对话语义，但不会把未闭合或已完成的工具调用格式重新喂给模型，避免它继续输出 DSML/tool-call 文本。
+
+示例结构如下（固定规则在前，动态命令在后，更利于前缀缓存命中）：
 
 ```json
 {"verdict":"allow" | "block","reason":"..."}
@@ -28,18 +30,18 @@
 ```xml
 <safety_review>
   <request>
-    <command>...</command>
     <instruction>...</instruction>
     <rules>...</rules>
     <output_contract>...</output_contract>
     <example>...</example>
+    <command><![CDATA[...]]></command>
   </request>
 </safety_review>
 ```
 
-每次审查将把完整规则与输出契约放在同一条 `safety_review` 用户消息内，不依赖追加 `systemPrompt`。
+每次审查将把完整规则与输出契约放在同一条 `safety_review` 用户消息内，不追加或改写 `systemPrompt`。
 
-审查提示在界面中会显示 `🕵️`。
+审查提示在界面中会显示 `🕵️`，并附带 `CH`、`input`、`output`、`cacheRead`、`total`。调试日志写入 `~/.pi/agent/pi-auto-approve.log`，包含审查输入、输出、usage 和过滤的工具轨迹数量。
 
 ## 安装
 

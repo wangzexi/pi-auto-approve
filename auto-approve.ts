@@ -18,6 +18,9 @@
 import { completeSimple } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Message, TextContent } from "@earendil-works/pi-ai";
+import { appendFileSync, mkdirSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { homedir } from "node:os";
 
 // ── Tier 1: Auto-permitted ──
 export const AUTO_PERMITTED = [
@@ -50,6 +53,7 @@ export const AUTO_BLOCKED = [
 ];
 
 let autoApproveEnabled = true;
+const REVIEW_LOG_PATH = join(homedir(), ".pi", "agent", "pi-auto-approve.log");
 
 function formatCacheHitRate(usage: any): string | null {
     if (!usage) return null;
@@ -93,29 +97,51 @@ function getTextContent(content: unknown): string {
         .join("");
 }
 
+function writeReviewLog(entry: Record<string, unknown>): void {
+    try {
+        mkdirSync(dirname(REVIEW_LOG_PATH), { recursive: true });
+        appendFileSync(REVIEW_LOG_PATH, `${JSON.stringify({ time: new Date().toISOString(), ...entry })}\n`, "utf8");
+    } catch {
+        // Debug logging must never affect command approval behavior.
+    }
+}
+
+function toCdata(value: string): string {
+    return value.replaceAll("]]>", "]]]]><![CDATA[>");
+}
+
+function sanitizeMessageForReview(message: Message): Message | null {
+    if (message.role === "toolResult") return null;
+    if (message.role !== "assistant") return { ...message };
+    if (!Array.isArray(message.content)) return { ...message };
+
+    const content = message.content.filter((part) => part?.type === "text" || part?.type === "thinking");
+    if (content.length === 0) return null;
+    return { ...message, content } as Message;
+}
+
 export function buildReviewPrompt(command: string): string {
-    const escapedCommand = command
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;");
     return [
         "<safety_review>",
         `  <request>`,
-        `    <command><![CDATA[${escapedCommand}]]></command>`,
         `    <instruction>`,
-        `      You are an internal security reviewer at the end of the current conversation.`,
-        `      The review should only reason about command safety and must not continue user work.`,
+        `      For this completion only, stop continuing the user's task and act as an internal security reviewer.`,
+        `      The bash tool call has already been proposed by the assistant. Your only job is to review that proposed command.`,
+        `      Do not execute, continue, rewrite, or plan any tool call from the conversation.`,
         `    </instruction>`,
         `    <rules>`,
-        `      <allow>read-only, low-risk, or explicitly authorized by the user</allow>`,
-        `      <block>destructive, secrets-related, state-changing without clear authorization, or ambiguous</block>`,
+        `      <allow>read-only, low-risk, or explicitly requested by the user in the current task</allow>`,
+        `      <allow>public network diagnostics requested by the user, such as IP lookup, DNS lookup, or HTTP connectivity checks</allow>`,
+        `      <block>destructive, secrets-related, credential exfiltration, private-file exfiltration, state-changing without clear authorization, or ambiguous</block>`,
         `    </rules>`,
         `    <output_contract>`,
         `      Return ONLY a JSON object with exactly these fields:`,
         `      {"verdict":"allow"|"block","reason":"..."}`,
-        `      No markdown, no tool call, no extra text.`,
+        `      The first output character must be { and the last output character must be }.`,
+        `      No markdown, no XML, no DSML, no tool call, no extra text.`,
         `    </output_contract>`,
         `    <example>{"verdict":"allow","reason":"read-only diagnostic command"}</example>`,
+        `    <command><![CDATA[${toCdata(command)}]]></command>`,
         `  </request>`,
         `</safety_review>`,
     ].join("\n");
@@ -125,39 +151,43 @@ export function buildReviewContext(
     sessionManager: { getBranch(): Array<{ type: string; message: { role: string; content: unknown } }> },
     systemPrompt: string | undefined,
     command: string,
-): { systemPrompt?: string; messages: Message[] } {
+): { systemPrompt?: string; messages: Message[]; droppedToolTraceMessages: number } {
     const messages: Message[] = [];
+    let droppedToolTraceMessages = 0;
     for (const entry of sessionManager.getBranch()) {
         if (entry.type !== "message") continue;
         const msg = entry.message as Message;
-        // Spread the entire message to keep the prefix byte-identical to the main
-        // conversation — this maximizes KV prefix cache hit rate.  Dropping any
-        // field (e.g. toolCallId, toolName, isError, timestamp) would both break
-        // the API serialisation and cause a cache miss.
-        messages.push({ ...msg });
+        const sanitized = sanitizeMessageForReview(msg);
+        if (!sanitized) {
+            droppedToolTraceMessages++;
+            continue;
+        }
+        // Keep textual conversation context, but remove tool-call transcript
+        // messages so the reviewer does not continue the main tool sequence.
+        messages.push(sanitized);
     }
     messages.push({
         role: "user",
         content: [{ type: "text" as const, text: buildReviewPrompt(command) }],
     });
-    return { systemPrompt, messages };
+    return { systemPrompt, messages, droppedToolTraceMessages };
 }
 
 export function parseReviewResult(text: string): { allowed: boolean; reason: string } | null {
-    const normalized = text.replace(/```json|```/gi, "").trim();
-    const firstBrace = normalized.indexOf("{");
-    const lastBrace = normalized.lastIndexOf("}");
-    if (firstBrace === -1 || lastBrace <= firstBrace) return null;
+    const normalized = text.trim();
 
     let payload: unknown;
     try {
-        payload = JSON.parse(normalized.slice(firstBrace, lastBrace + 1));
+        payload = JSON.parse(normalized);
     } catch {
         return null;
     }
     if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
 
     const typedPayload = payload as Record<string, unknown>;
+    const keys = Object.keys(typedPayload).sort();
+    if (keys.length !== 2 || keys[0] !== "reason" || keys[1] !== "verdict") return null;
+
     const reasonRaw = typeof typedPayload.reason === "string" ? typedPayload.reason : "";
     const reason = reasonRaw.trim();
 
@@ -223,7 +253,7 @@ export default function (pi: ExtensionAPI) {
                 return { block: true, reason: "Review model is unavailable" };
             }
 
-            const { systemPrompt, messages } = buildReviewContext(ctx.sessionManager, ctx.getSystemPrompt(), command);
+            const { systemPrompt, messages, droppedToolTraceMessages } = buildReviewContext(ctx.sessionManager, ctx.getSystemPrompt(), command);
             const auth = await ctx.modelRegistry.getApiKeyAndHeaders(reviewModel);
             if (!auth?.ok) {
                 const error = auth?.error ? `: ${auth.error}` : "";
@@ -257,6 +287,15 @@ export default function (pi: ExtensionAPI) {
                 msg = await completeReview(messages);
             } catch {
                 // Review timed out (30s) — fail open but tell the user via toast
+                writeReviewLog({
+                    event: "timeout",
+                    command,
+                    model: getModelRef(reviewModel),
+                    sessionId,
+                    messageCount: messages.length,
+                    systemPromptLength: systemPrompt?.length ?? 0,
+                    droppedToolTraceMessages,
+                });
                 ctx.ui.notify(`⏱ Review timed out — allowed: ${command.slice(0, 80)}`, "warning");
                 return undefined;
             }
@@ -287,6 +326,24 @@ export default function (pi: ExtensionAPI) {
             let decision = text ? parseReviewResult(text) : null;
             if (!decision) {
                 const reason = "Review did not return valid structured verdict";
+                writeReviewLog({
+                    event: "fail_open_unparseable",
+                    command,
+                    model: getModelRef(reviewModel),
+                    sessionId,
+                    messageCount: messages.length,
+                    systemPromptLength: systemPrompt?.length ?? 0,
+                    droppedToolTraceMessages,
+                    reviewInputLength: inputTextCount,
+                    reviewOutputLength: outputTextCount,
+                    reviewInput,
+                    reviewOutput,
+                    stopReason: msg?.stopReason,
+                    usage: msg?.usage,
+                    usageSummary: formatUsageSummary(msg?.usage),
+                    rawContent: msg?.content,
+                    reason,
+                });
                 if (shouldDebugReview()) {
                     ctx.ui.notify(`⚠ Raw review: ${(text || JSON.stringify(msg?.content ?? [])).slice(0, 220)}`, "warning");
                 }
@@ -296,9 +353,45 @@ export default function (pi: ExtensionAPI) {
 
             if (decision.allowed) {
                 // Allowed: toast only, never inject into tool result (no context pollution)
+                writeReviewLog({
+                    event: "allow",
+                    command,
+                    model: getModelRef(reviewModel),
+                    sessionId,
+                    messageCount: messages.length,
+                    systemPromptLength: systemPrompt?.length ?? 0,
+                    droppedToolTraceMessages,
+                    reviewInputLength: inputTextCount,
+                    reviewOutputLength: outputTextCount,
+                    reviewInput,
+                    reviewOutput,
+                    stopReason: msg?.stopReason,
+                    usage: msg?.usage,
+                    usageSummary: formatUsageSummary(msg?.usage),
+                    verdict: "allow",
+                    reason: decision.reason,
+                });
                 ctx.ui.notify(formatReviewToast(decision.reason, msg?.usage), "info");
                 return undefined;
             }
+            writeReviewLog({
+                event: "block",
+                command,
+                model: getModelRef(reviewModel),
+                sessionId,
+                messageCount: messages.length,
+                systemPromptLength: systemPrompt?.length ?? 0,
+                droppedToolTraceMessages,
+                reviewInputLength: inputTextCount,
+                reviewOutputLength: outputTextCount,
+                reviewInput,
+                reviewOutput,
+                stopReason: msg?.stopReason,
+                usage: msg?.usage,
+                usageSummary: formatUsageSummary(msg?.usage),
+                verdict: "block",
+                reason: decision.reason,
+            });
             ctx.ui.notify(formatReviewToast(`Blocked: ${decision.reason}`, msg?.usage), "warning");
             return { block: true, reason: `${decision.reason}` };
         } catch {
