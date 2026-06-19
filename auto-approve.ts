@@ -7,9 +7,9 @@
  * Three tiers:
  *   1. Auto-permitted — safe commands via regex (ls, cd, grep, etc.)
  *   2. Auto-blocked   — catastrophic operations via regex (rm -rf /, mkfs.)
- *   3. Self-review    — first-class cache: systemPrompt + sessionId + tools
+ *   3. Self-review    — first-class cache: systemPrompt + sessionId + shared context
  *                       fed to completeSimple; same model, same prefix,
- *                       88%+ cache hit rate vs main conversation.
+ *                       usually favoring prefix cache hit rates.
  *
  * Pass = TUI notify, no tool result pollution.
  * Block = reason sent back to model.
@@ -87,23 +87,11 @@ export function buildReviewPrompt(command: string): string {
         `- allow: read-only, low-risk, or explicitly authorized by the user`,
         `- block: destructive, secrets-related, writes/edits state without clear authorization, or unclear intent`,
         `Output format (exact JSON, no markdown, no tool call, no extra text):`,
-        `{`,
-        `  "verdict": "allow" | "block",`,
-        `  "reason": "short reason (<= 12 words)"`,
-        `}`,
+        `- verdict must be "allow" or "block"`,
+        `- reason should be a short phrase`,
+        `Example:`,
+        `{"verdict":"allow","reason":"read-only diagnostic command"}`,
     ].join("\n");
-}
-
-function classifyVerdict(value: string): boolean | null {
-    const normalized = value.trim().toLowerCase();
-    if (!normalized) return null;
-
-    if (/^(block|reject|rejected|deny|denied|no|unsafe)\b/.test(normalized)) return false;
-    if (/^(allow|approve|approved|confirm|confirmed|yes|safe|ok)\b/.test(normalized)) return true;
-    if (/不安全|危险|阻止|拦截|拒绝|不要执行|不能执行/.test(normalized)) return false;
-    if (/安全|允许|可以执行|可执行|同意|批准/.test(normalized)) return true;
-
-    return null;
 }
 
 export function parseReviewResult(text: string): { allowed: boolean; reason: string } | null {
@@ -121,16 +109,16 @@ export function parseReviewResult(text: string): { allowed: boolean; reason: str
     if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
 
     const typedPayload = payload as Record<string, unknown>;
-    const verdictValue = typeof typedPayload.verdict === "string" ? typedPayload.verdict : "";
-    const allowedValue = typeof typedPayload.allowed === "boolean" ? typedPayload.allowed : null;
-    const allowed =
-        (allowedValue !== null ? allowedValue : null) ??
-        (verdictValue ? classifyVerdict(verdictValue) : null);
-    if (allowed === null) return null;
+    const reasonRaw = typeof typedPayload.reason === "string" ? typedPayload.reason : "";
+    const reason = reasonRaw.trim();
 
-    const reason = typeof typedPayload.reason === "string" && typedPayload.reason.trim()
-        ? typedPayload.reason.trim()
-        : (allowed ? "approved by review" : "blocked by review");
+    const verdictValue = typeof typedPayload.verdict === "string" ? typedPayload.verdict.trim().toLowerCase() : "";
+    const allowed =
+        verdictValue === "allow" ? true :
+            verdictValue === "block" ? false :
+                null;
+    if (allowed === null) return null;
+    if (!reason) return null;
 
     return { allowed, reason };
 }
@@ -221,29 +209,20 @@ export default function (pi: ExtensionAPI) {
             );
 
             const sessionId = ctx.sessionManager.getSessionId();
-            const reasoningCandidates: Array<undefined> = [undefined];
             const completeReview = async (reviewMessages: Message[]) => {
-                let reviewed: any = null;
-                for (const reasoning of reasoningCandidates) {
-                    const options: any = {
-                        apiKey: auth?.apiKey,
-                        env: auth?.env,
-                        headers: auth?.headers,
-                        cacheRetention: "short",
-                        sessionId,
-                        signal: ctx.signal,
-                        maxTokens: 160,
-                    };
-                    if (reasoning) options.reasoning = reasoning;
-                    reviewed = await Promise.race([
-                        completeSimple(reviewModel, { systemPrompt, messages: reviewMessages }, options),
-                        timeoutPromise,
-                    ]);
-                    const errorMessage = String(reviewed?.errorMessage || "");
-                    if (reviewed?.stopReason !== "error") break;
-                    if (!/unsupported value|not supported/i.test(errorMessage)) break;
-                }
-                return reviewed;
+                const options: any = {
+                    apiKey: auth?.apiKey,
+                    env: auth?.env,
+                    headers: auth?.headers,
+                    cacheRetention: "short",
+                    sessionId,
+                    signal: ctx.signal,
+                    maxTokens: 160,
+                };
+                return await Promise.race([
+                    completeSimple(reviewModel, { systemPrompt, messages: reviewMessages }, options),
+                    timeoutPromise,
+                ]);
             };
 
             let msg: any = null;
