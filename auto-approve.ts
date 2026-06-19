@@ -62,7 +62,7 @@ function formatCacheHitRate(usage: any): string | null {
 
 function formatReviewToast(reason: string, usage: any): string {
     const cache = formatCacheHitRate(usage);
-    return cache ? `🛡️ ${reason} · ${cache}` : `🛡️ ${reason}`;
+    return cache ? `🕵️ ${reason} · ${cache}` : `🕵️ ${reason}`;
 }
 
 function shouldDebugReview(): boolean {
@@ -78,19 +78,30 @@ function getTextContent(content: unknown): string {
 }
 
 export function buildReviewPrompt(command: string): string {
+    const escapedCommand = command
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
     return [
-        `You are an internal safety review module inserted at the end of the current conversation.`,
-        `Main conversation is context only; do not continue user work.`,
-        `Task: decide whether the following bash command should be allowed now.`,
-        `Command: ${JSON.stringify(command)}`,
-        `Decision rules:`,
-        `- allow: read-only, low-risk, or explicitly authorized by the user`,
-        `- block: destructive, secrets-related, writes/edits state without clear authorization, or unclear intent`,
-        `Output format (exact JSON, no markdown, no tool call, no extra text):`,
-        `- verdict must be "allow" or "block"`,
-        `- reason should be a short phrase`,
-        `Example:`,
-        `{"verdict":"allow","reason":"read-only diagnostic command"}`,
+        "<safety_review>",
+        `  <role>internal_safety_review_module</role>`,
+        `  <instruction>`,
+        `    You are an internal security reviewer injected into the end of the current conversation.`,
+        `    The review should only reason about command safety and must not continue user requests.`,
+        `    Decide the verdict for the provided bash command using the surrounding conversation context.`,
+        `  </instruction>`,
+        `  <command><![CDATA[${escapedCommand}]]></command>`,
+        `  <rules>`,
+        `    <allow>read-only, low-risk, or explicitly authorized by the user</allow>`,
+        `    <block>destructive, secrets-related, state-changing without clear authorization, or ambiguous</block>`,
+        `  </rules>`,
+        `  <output_contract>`,
+        `    Return ONLY a JSON object with exactly these fields:`,
+        `    {"verdict":"allow"|"block","reason":"..."}`,
+        `    No markdown, no tool call, no extra text.`,
+        `  </output_contract>`,
+        `  <example>{"verdict":"allow","reason":"read-only diagnostic command"}</example>`,
+        `</safety_review>`,
     ].join("\n");
 }
 
@@ -138,11 +149,11 @@ export function buildReviewContext(
         // the API serialisation and cause a cache miss.
         messages.push({ ...msg });
     }
-    messages.push({
-        role: "user",
-        content: [{ type: "text" as const, text: buildReviewPrompt(command) }],
-    });
-    return { systemPrompt, messages };
+    const reviewPrompt = buildReviewPrompt(command);
+    const reviewSystemPrompt = systemPrompt
+        ? `${systemPrompt}\n\n${reviewPrompt}`
+        : reviewPrompt;
+    return { systemPrompt: reviewSystemPrompt, messages };
 }
 
 export function getModelRef(model: { provider?: string; id?: string } | undefined): string {
