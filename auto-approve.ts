@@ -58,10 +58,20 @@ const REVIEW_LOG_PATH = join(homedir(), ".pi", "agent", "pi-auto-approve.log");
 function formatCacheHitRate(usage: any): string | null {
     if (!usage) return null;
     const cacheRead = Number(usage.cacheRead ?? 0);
+    const input = Number(usage.input ?? usage.inputTokens ?? 0);
+    const promptTotal = cacheRead + input;
+    if (!Number.isFinite(cacheRead) || !Number.isFinite(input) || promptTotal <= 0) return null;
+    const cacheHit = Math.round((cacheRead / promptTotal) * 1000) / 10;
+    return `CH ${cacheHit}%`;
+}
+
+function formatTotalCacheShare(usage: any): string | null {
+    if (!usage) return null;
+    const cacheRead = Number(usage.cacheRead ?? 0);
     const total = Number(usage.totalTokens ?? 0);
     if (!Number.isFinite(cacheRead) || !Number.isFinite(total) || total <= 0) return null;
-    const cacheHit = total > 0 ? Math.round((cacheRead / total) * 1000) / 10 : 0;
-    return `CH ${cacheHit}%`;
+    const cacheHit = Math.round((cacheRead / total) * 1000) / 10;
+    return `totalCH=${cacheHit}%`;
 }
 
 function formatReviewToast(reason: string, usage: any): string {
@@ -82,11 +92,12 @@ function getUsageCount(usage: any, ...keys: string[]): string {
 function formatUsageSummary(usage: any): string | null {
     if (!usage) return null;
     const cache = formatCacheHitRate(usage) ?? "CH N/A";
+    const totalCache = formatTotalCacheShare(usage) ?? "totalCH=N/A";
     const input = getUsageCount(usage, "input", "inputTokens");
     const output = getUsageCount(usage, "output", "outputTokens");
     const cacheRead = getUsageCount(usage, "cacheRead");
     const total = getUsageCount(usage, "totalTokens");
-    return `${cache} | input=${input} | output=${output} | cacheRead=${cacheRead} | total=${total}`;
+    return `${cache} | ${totalCache} | input=${input} | output=${output} | cacheRead=${cacheRead} | total=${total}`;
 }
 
 function getTextContent(content: unknown): string {
@@ -112,6 +123,7 @@ function toCdata(value: string): string {
 
 function sanitizeMessageForReview(message: Message): Message | null {
     if (message.role === "toolResult") return null;
+    if (message.role === "user") return { ...message };
     if (message.role !== "assistant") return { ...message };
     if (!Array.isArray(message.content)) return { ...message };
 
@@ -123,26 +135,11 @@ function sanitizeMessageForReview(message: Message): Message | null {
 export function buildReviewPrompt(command: string): string {
     return [
         "<safety_review>",
-        `  <request>`,
-        `    <instruction>`,
-        `      For this completion only, stop continuing the user's task and act as an internal security reviewer.`,
-        `      The bash tool call has already been proposed by the assistant. Your only job is to review that proposed command.`,
-        `      Do not execute, continue, rewrite, or plan any tool call from the conversation.`,
-        `    </instruction>`,
-        `    <rules>`,
-        `      <allow>read-only, low-risk, or explicitly requested by the user in the current task</allow>`,
-        `      <allow>public network diagnostics requested by the user, such as IP lookup, DNS lookup, or HTTP connectivity checks</allow>`,
-        `      <block>destructive, secrets-related, credential exfiltration, private-file exfiltration, state-changing without clear authorization, or ambiguous</block>`,
-        `    </rules>`,
-        `    <output_contract>`,
-        `      Return ONLY a JSON object with exactly these fields:`,
-        `      {"verdict":"allow"|"block","reason":"..."}`,
-        `      The first output character must be { and the last output character must be }.`,
-        `      No markdown, no XML, no DSML, no tool call, no extra text.`,
-        `    </output_contract>`,
-        `    <example>{"verdict":"allow","reason":"read-only diagnostic command"}</example>`,
-        `    <command><![CDATA[${toCdata(command)}]]></command>`,
-        `  </request>`,
+        `  <instruction>Review only the command below. Do not continue the user task or emit tool/DSML/XML text.</instruction>`,
+        `  <allow>read-only, low-risk, user-requested commands, and public network diagnostics.</allow>`,
+        `  <block>destructive, secrets/credentials/private-file exfiltration, unauthorized state change, or ambiguous.</block>`,
+        `  <output>Return one strict JSON object like {"verdict":"allow","reason":"short reason"} or {"verdict":"block","reason":"short reason"}.</output>`,
+        `  <command><![CDATA[${toCdata(command)}]]></command>`,
         `</safety_review>`,
     ].join("\n");
 }
@@ -274,7 +271,8 @@ export default function (pi: ExtensionAPI) {
                     cacheRetention: "short",
                     sessionId,
                     signal: ctx.signal,
-                    maxTokens: 160,
+                    temperature: 0,
+                    maxTokens: 80,
                 };
                 return await Promise.race([
                     completeSimple(reviewModel, { systemPrompt, messages: reviewMessages }, options),

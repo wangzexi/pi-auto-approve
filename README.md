@@ -29,19 +29,17 @@
 
 ```xml
 <safety_review>
-  <request>
-    <instruction>...</instruction>
-    <rules>...</rules>
-    <output_contract>...</output_contract>
-    <example>...</example>
-    <command><![CDATA[...]]></command>
-  </request>
+  <instruction>...</instruction>
+  <allow>...</allow>
+  <block>...</block>
+  <output>...</output>
+  <command><![CDATA[...]]></command>
 </safety_review>
 ```
 
 每次审查将把完整规则与输出契约放在同一条 `safety_review` 用户消息内，不追加或改写 `systemPrompt`。
 
-审查提示在界面中会显示 `🕵️`，并附带 `CH`、`input`、`output`、`cacheRead`、`total`。调试日志写入 `~/.pi/agent/pi-auto-approve.log`，包含审查输入、输出、usage 和过滤的工具轨迹数量。
+审查提示在界面中会显示 `🕵️`，并附带 `CH`、`totalCH`、`input`、`output`、`cacheRead`、`total`。其中 `CH` 是 prompt 侧缓存命中率：`cacheRead / (cacheRead + input)`；`totalCH` 是包含输出 token 的旧诊断口径。调试日志写入 `~/.pi/agent/pi-auto-approve.log`，包含审查输入、输出、usage 和过滤的工具轨迹数量。
 
 ## 安装
 
