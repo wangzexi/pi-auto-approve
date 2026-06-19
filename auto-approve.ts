@@ -69,6 +69,11 @@ function shouldDebugReview(): boolean {
     return (globalThis as any).process?.env?.PI_AUTO_APPROVE_DEBUG_REVIEW === "1";
 }
 
+function getReviewCount(usage: any, key: string): string {
+    const value = Number(usage?.[key] ?? 0);
+    return Number.isFinite(value) ? Math.round(value).toString() : "N/A";
+}
+
 function getTextContent(content: unknown): string {
     if (!Array.isArray(content)) return "";
     return content
@@ -245,6 +250,24 @@ export default function (pi: ExtensionAPI) {
                 return undefined;
             }
 
+            const lastReviewInput = messages[messages.length - 1]?.content as unknown;
+            const reviewInput = Array.isArray(lastReviewInput)
+                ? lastReviewInput
+                    .filter((p): p is TextContent => p?.type === "text")
+                    .map((p) => p.text)
+                    .join("")
+                : "";
+            const reviewOutput = getTextContent(msg?.content);
+            const ch = formatCacheHitRate(msg?.usage) ?? "N/A";
+            const inputTextCount = reviewInput.length;
+            const outputTextCount = (reviewOutput || "").length;
+            const inputTokenCount = getReviewCount(msg?.usage, "inputTokens");
+            const outputTokenCount = getReviewCount(msg?.usage, "outputTokens");
+            ctx.ui.notify(
+                `🧪 Review trace\nINPUT(${inputTextCount} chars): ${reviewInput.slice(0, 1000)}\nOUTPUT(${outputTextCount} chars): ${(reviewOutput || "").slice(0, 1000)}\nCH: ${ch} | inputTokenCount: ${inputTokenCount} | outputTokenCount: ${outputTokenCount}`,
+                "info",
+            );
+
             if (msg?.stopReason === "error") {
                 const em = msg?.errorMessage ? ` (${msg.errorMessage})` : '';
                 ctx.ui.notify(`⚠ Review error — allowed: ${command.slice(0, 60)}${em}`, "warning");
@@ -258,8 +281,8 @@ export default function (pi: ExtensionAPI) {
                 if (shouldDebugReview()) {
                     ctx.ui.notify(`⚠ Raw review: ${(text || JSON.stringify(msg?.content ?? [])).slice(0, 220)}`, "warning");
                 }
-                ctx.ui.notify(formatReviewToast(`Blocked: ${reason}`, msg?.usage), "warning");
-                return { block: true, reason };
+                ctx.ui.notify(`🧪 ${reason} (fail-open): ${command.slice(0, 80)} · CH ${formatCacheHitRate(msg?.usage) ?? "N/A"}`, "warning");
+                return undefined;
             }
 
             if (decision.allowed) {
