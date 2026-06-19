@@ -7,9 +7,9 @@
  * Three tiers:
  *   1. Auto-permitted — safe commands via regex (ls, cd, grep, etc.)
  *   2. Auto-blocked   — catastrophic operations via regex (rm -rf /, mkfs.)
- *   3. Self-review    — first-class cache: systemPrompt + sessionId + shared context
- *                       fed to completeSimple; same model, same prefix,
- *                       usually favoring prefix cache hit rates.
+ *   3. Self-review    — first-class cache: sessionId + shared context + bounded user
+ *                       safety envelope fed to completeSimple; same model/prefix
+ *                       segments, favoring cache hit rates when commands repeat.
  *
  * Pass = TUI notify, no tool result pollution.
  * Block = reason sent back to model.
@@ -86,23 +86,22 @@ export function buildReviewPrompt(command: string): string {
         "<safety_review>",
         `  <request>`,
         `    <command><![CDATA[${escapedCommand}]]></command>`,
+        `    <instruction>`,
+        `      You are an internal security reviewer at the end of the current conversation.`,
+        `      The review should only reason about command safety and must not continue user work.`,
+        `    </instruction>`,
+        `    <rules>`,
+        `      <allow>read-only, low-risk, or explicitly authorized by the user</allow>`,
+        `      <block>destructive, secrets-related, state-changing without clear authorization, or ambiguous</block>`,
+        `    </rules>`,
+        `    <output_contract>`,
+        `      Return ONLY a JSON object with exactly these fields:`,
+        `      {"verdict":"allow"|"block","reason":"..."}`,
+        `      No markdown, no tool call, no extra text.`,
+        `    </output_contract>`,
+        `    <example>{"verdict":"allow","reason":"read-only diagnostic command"}</example>`,
         `  </request>`,
         `</safety_review>`,
-    ].join("\n");
-}
-
-export function buildReviewSystemPrompt(): string {
-    return [
-        `Safety review requests will be sent as the last user message wrapped in <safety_review>...</safety_review>.`,
-        `The review message is a pure request envelope and must contain only the command.`,
-        `You are an internal security reviewer at the end of the current conversation.`,
-        `The review should only reason about command safety and must not continue user work.`,
-        `Decision rules:`,
-        `- allow: read-only, low-risk, or explicitly authorized by the user`,
-        `- block: destructive, secrets-related, state-changing without clear authorization, or ambiguous`,
-        `Return ONLY a JSON object with exactly these fields:`,
-        `{"verdict":"allow"|"block","reason":"..."}`,
-        `No markdown, no tool call, no extra text.`,
     ].join("\n");
 }
 
@@ -125,10 +124,7 @@ export function buildReviewContext(
         role: "user",
         content: [{ type: "text" as const, text: buildReviewPrompt(command) }],
     });
-    const reviewSystemPrompt = systemPrompt
-        ? `${systemPrompt}\n\n${buildReviewSystemPrompt()}`
-        : buildReviewSystemPrompt();
-    return { systemPrompt: reviewSystemPrompt, messages };
+    return { systemPrompt, messages };
 }
 
 export function parseReviewResult(text: string): { allowed: boolean; reason: string } | null {

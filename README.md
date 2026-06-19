@@ -33,8 +33,7 @@
 </safety_review>
 ```
 
-主提示词会追加一段固定的说明（规则和输出契约都在这里固定写死）：  
-`Safety review requests will be sent as the last user message wrapped in <safety_review>...`
+每次审查将把完整规则与输出契约放在同一条 `safety_review` 用户消息内，不依赖追加 `systemPrompt`。
 
 审查提示在界面中会显示 `🕵️`。
 
