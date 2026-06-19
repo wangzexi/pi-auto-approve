@@ -40,3 +40,9 @@ pi install git:github.com/wangzexi/pi-auto-approve
 ## 配置
 
 零配置，开箱即用。审查使用当前对话的同一模型。
+
+## 测试
+
+```bash
+PI_TEST_MODEL=deepseek/deepseek-v4-pro bun run test
+```

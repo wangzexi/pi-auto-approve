@@ -17,10 +17,10 @@
 
 import { completeSimple } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { Message, TextContent, Tool } from "@earendil-works/pi-ai";
+import type { Message, TextContent } from "@earendil-works/pi-ai";
 
 // ── Tier 1: Auto-permitted ──
-const AUTO_PERMITTED = [
+export const AUTO_PERMITTED = [
     /^(ls|dir|tree)\b/,
     /^cd\b/,
     /^(cat|head|tail|less|more)\b/,
@@ -39,7 +39,7 @@ const AUTO_PERMITTED = [
 ];
 
 // ── Tier 2: Auto-blocked ──
-const AUTO_BLOCKED = [
+export const AUTO_BLOCKED = [
     /\brm\s+(-rf?|--recursive)\s+\/(?:\s|$)/,
     /\brm\s+(-rf?|--recursive)\s+\/etc\b/,
     /\brm\s+(-rf?|--recursive)\s+\/usr\b/,
@@ -49,66 +49,93 @@ const AUTO_BLOCKED = [
     /\bmkfs\./,
 ];
 
-const toolCallDecisions = new Map<string, string>();
 let autoApproveEnabled = true;
 
-function buildReviewPrompt(command: string): string {
+function formatCacheHitRate(usage: any): string | null {
+    if (!usage) return null;
+    const cacheRead = Number(usage.cacheRead ?? 0);
+    const total = Number(usage.totalTokens ?? 0);
+    if (!Number.isFinite(cacheRead) || !Number.isFinite(total) || total <= 0) return null;
+    const cacheHit = total > 0 ? Math.round((cacheRead / total) * 1000) / 10 : 0;
+    return `CH ${cacheHit}%`;
+}
+
+function formatReviewToast(reason: string, usage: any): string {
+    const cache = formatCacheHitRate(usage);
+    return cache ? `🛡️ ${reason} · ${cache}` : `🛡️ ${reason}`;
+}
+
+function shouldDebugReview(): boolean {
+    return (globalThis as any).process?.env?.PI_AUTO_APPROVE_DEBUG_REVIEW === "1";
+}
+
+function getTextContent(content: unknown): string {
+    if (!Array.isArray(content)) return "";
+    return content
+        .filter((p): p is TextContent => p?.type === "text")
+        .map((p) => p.text)
+        .join("");
+}
+
+export function buildReviewPrompt(command: string): string {
     return [
-        `<auto-approve>`,
-        `  <command>${command}</command>`,
-        `</auto-approve>`,
-        ``,
-        `Review this command against the full conversation context.`,
-        `Reply with EXACTLY this XML shape and nothing else: No markdown, no prose.`,
-        `<auto_approve_result>`,
-        `  <verdict>allow</verdict> OR <verdict>block</verdict>`,
-        `  <reason>one short phrase, 3-8 words</reason>`,
-        `</auto_approve_result>`,
+        `You are an internal safety review module inserted at the end of the current conversation.`,
+        `Main conversation is context only; do not continue user work.`,
+        `Task: decide whether the following bash command should be allowed now.`,
+        `Command: ${JSON.stringify(command)}`,
+        `Decision rules:`,
+        `- allow: read-only, low-risk, or explicitly authorized by the user`,
+        `- block: destructive, secrets-related, writes/edits state without clear authorization, or unclear intent`,
+        `Output format (exact JSON, no markdown, no tool call, no extra text):`,
+        `{`,
+        `  "verdict": "allow" | "block",`,
+        `  "reason": "short reason (<= 12 words)"`,
+        `}`,
     ].join("\n");
 }
 
-function parseXmlVerdict(text: string): { allowed: boolean; reason: string } | null {
-    const normalized = text
-        .replace(/```xml|```/gi, "")
-        .replace(/&lt;/gi, "<")
-        .replace(/&gt;/gi, ">")
-        .replace(/&amp;/gi, "&")
-        .replace(/&quot;/gi, '"')
-        .replace(/&#39;/gi, "'");
+function classifyVerdict(value: string): boolean | null {
+    const normalized = value.trim().toLowerCase();
+    if (!normalized) return null;
 
-    const verdictPatterns = [
-        /<(?:verdict|decision|result)>\s*([\s\S]*?)\s*<\/(?:verdict|decision|result)>/i,
-        /<(?:auto_approve_result|review_result)[^>]*\sverdict=["']([^"']+)["'][^>]*>/i,
-    ];
-    const verdictRaw = verdictPatterns
-        .map((pattern) => normalized.match(pattern)?.[1]?.trim())
-        .find(Boolean)
-        ?.toLowerCase();
+    if (/^(block|reject|rejected|deny|denied|no|unsafe)\b/.test(normalized)) return false;
+    if (/^(allow|approve|approved|confirm|confirmed|yes|safe|ok)\b/.test(normalized)) return true;
+    if (/不安全|危险|阻止|拦截|拒绝|不要执行|不能执行/.test(normalized)) return false;
+    if (/安全|允许|可以执行|可执行|同意|批准/.test(normalized)) return true;
 
-    if (!verdictRaw) return null;
+    return null;
+}
 
-    const allowWords = ["allow", "approve", "approved", "confirm", "confirmed", "yes", "safe", "ok"];
-    const blockWords = ["block", "reject", "rejected", "deny", "denied", "no", "unsafe"];
+export function parseReviewResult(text: string): { allowed: boolean; reason: string } | null {
+    const normalized = text.replace(/```json|```/gi, "").trim();
+    const firstBrace = normalized.indexOf("{");
+    const lastBrace = normalized.lastIndexOf("}");
+    if (firstBrace === -1 || lastBrace <= firstBrace) return null;
 
-    const allowed = allowWords.some((word) => verdictRaw.includes(word))
-        ? true
-        : blockWords.some((word) => verdictRaw.includes(word))
-          ? false
-          : null;
+    let payload: unknown;
+    try {
+        payload = JSON.parse(normalized.slice(firstBrace, lastBrace + 1));
+    } catch {
+        return null;
+    }
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+
+    const typedPayload = payload as Record<string, unknown>;
+    const verdictValue = typeof typedPayload.verdict === "string" ? typedPayload.verdict : "";
+    const allowedValue = typeof typedPayload.allowed === "boolean" ? typedPayload.allowed : null;
+    const allowed =
+        (allowedValue !== null ? allowedValue : null) ??
+        (verdictValue ? classifyVerdict(verdictValue) : null);
     if (allowed === null) return null;
 
-    const reasonPatterns = [
-        /<(?:reason|note|why)>\s*([\s\S]*?)\s*<\/(?:reason|note|why)>/i,
-        /<(?:auto_approve_result|review_result)[^>]*\sreason=["']([^"']+)["'][^>]*>/i,
-    ];
-    const reason = reasonPatterns
-        .map((pattern) => normalized.match(pattern)?.[1]?.trim())
-        .find(Boolean) || (allowed ? "approved" : "blocked by review");
+    const reason = typeof typedPayload.reason === "string" && typedPayload.reason.trim()
+        ? typedPayload.reason.trim()
+        : (allowed ? "approved by review" : "blocked by review");
 
     return { allowed, reason };
 }
 
-function buildReviewContext(
+export function buildReviewContext(
     sessionManager: { getBranch(): Array<{ type: string; message: { role: string; content: unknown } }> },
     systemPrompt: string | undefined,
     command: string,
@@ -117,15 +144,30 @@ function buildReviewContext(
     for (const entry of sessionManager.getBranch()) {
         if (entry.type !== "message") continue;
         const msg = entry.message as Message;
-        // Include ALL roles (user, assistant, toolResult) to keep prefix identical
-        // and ALL content types so provider's prefix cache matches the main conversation
-        messages.push({ role: msg.role, content: msg.content });
+        // Spread the entire message to keep the prefix byte-identical to the main
+        // conversation — this maximizes KV prefix cache hit rate.  Dropping any
+        // field (e.g. toolCallId, toolName, isError, timestamp) would both break
+        // the API serialisation and cause a cache miss.
+        messages.push({ ...msg });
     }
     messages.push({
         role: "user",
         content: [{ type: "text" as const, text: buildReviewPrompt(command) }],
     });
     return { systemPrompt, messages };
+}
+
+export function getModelRef(model: { provider?: string; id?: string } | undefined): string {
+    if (!model?.provider || !model?.id) return "unknown";
+    return `${model.provider}/${model.id}`;
+}
+
+export function resolveReviewModel<T extends { provider?: string; id?: string }>(
+    modelRegistry: { find(provider: string, id: string): T | undefined },
+    model: T,
+): T {
+    if (!model.provider || !model.id) return model;
+    return modelRegistry.find(model.provider, model.id) ?? model;
 }
 
 export default function (pi: ExtensionAPI) {
@@ -160,80 +202,86 @@ export default function (pi: ExtensionAPI) {
             return { block: true, reason: "Requires review (non-interactive mode)" };
         }
 
-        ctx.ui.setStatus("auto-approve", `Reviewing: ${command.slice(0, 60)}...`);
-
         try {
+            const reviewModel = resolveReviewModel(ctx.modelRegistry, ctx.model);
+            if (!reviewModel.provider || !reviewModel.id) {
+                return { block: true, reason: "Review model is unavailable" };
+            }
+
             const { systemPrompt, messages } = buildReviewContext(ctx.sessionManager, ctx.getSystemPrompt(), command);
-            const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
-            const timeoutPromise = new Promise<string>((_, reject) =>
+            const auth = await ctx.modelRegistry.getApiKeyAndHeaders(reviewModel);
+            if (!auth?.ok) {
+                const error = auth?.error ? `: ${auth.error}` : "";
+                ctx.ui.notify(`🚫 Review auth failed for ${getModelRef(reviewModel)}${error}`, "warning");
+                return { block: true, reason: `Review auth failed for ${getModelRef(reviewModel)}` };
+            }
+
+            const timeoutPromise = new Promise<never>((_, reject) =>
                 setTimeout(() => reject(new Error("Review timed out")), 30000)
             );
 
             const sessionId = ctx.sessionManager.getSessionId();
-            // Build context matching main conversation: include active tool definitions for cache affinity
-            const activeToolNames = pi.getActiveTools();
-            const allTools = pi.getAllTools();
-            const tools: Tool[] = allTools
-                .filter((t) => activeToolNames.includes(t.name))
-                .map((t) => ({ name: t.name, description: t.description, parameters: t.parameters }));
-            const reasoningCandidates: Array<"minimal" | "low" | undefined> = ["minimal", "low", undefined];
-            let msg: any = null;
-            try {
+            const reasoningCandidates: Array<undefined> = [undefined];
+            const completeReview = async (reviewMessages: Message[]) => {
+                let reviewed: any = null;
                 for (const reasoning of reasoningCandidates) {
                     const options: any = {
                         apiKey: auth?.apiKey,
+                        env: auth?.env,
                         headers: auth?.headers,
                         cacheRetention: "short",
                         sessionId,
+                        signal: ctx.signal,
+                        maxTokens: 160,
                     };
                     if (reasoning) options.reasoning = reasoning;
-                    msg = await Promise.race([completeSimple(ctx.model, { systemPrompt, messages, tools }, options), timeoutPromise]);
-                    const errorMessage = String(msg?.errorMessage || "");
-                    if (msg?.stopReason !== "error") break;
+                    reviewed = await Promise.race([
+                        completeSimple(reviewModel, { systemPrompt, messages: reviewMessages }, options),
+                        timeoutPromise,
+                    ]);
+                    const errorMessage = String(reviewed?.errorMessage || "");
+                    if (reviewed?.stopReason !== "error") break;
                     if (!/unsupported value|not supported/i.test(errorMessage)) break;
                 }
+                return reviewed;
+            };
+
+            let msg: any = null;
+            try {
+                msg = await completeReview(messages);
             } catch {
-                ctx.ui.setStatus("auto-approve", undefined);
-                toolCallDecisions.set(event.toolCallId, "Review timed out — allowed");
+                // Review timed out (30s) — fail open but tell the user via toast
+                ctx.ui.notify(`⏱ Review timed out — allowed: ${command.slice(0, 80)}`, "warning");
                 return undefined;
             }
-
-            ctx.ui.setStatus("auto-approve", undefined);
 
             if (msg?.stopReason === "error") {
-                toolCallDecisions.set(event.toolCallId, "Review error — allowed");
+                const em = msg?.errorMessage ? ` (${msg.errorMessage})` : '';
+                ctx.ui.notify(`⚠ Review error — allowed: ${command.slice(0, 60)}${em}`, "warning");
                 return undefined;
             }
 
-            const text = msg.content
-                .filter((p): p is TextContent => p.type === "text")
-                .map((p) => p.text)
-                .join("");
-            const decision = text ? parseXmlVerdict(text) : null;
+            const text = getTextContent(msg.content);
+            let decision = text ? parseReviewResult(text) : null;
             if (!decision) {
-                toolCallDecisions.set(event.toolCallId, "Review unclear — allowed");
-                return undefined;
+                const reason = "Review did not return valid structured verdict";
+                if (shouldDebugReview()) {
+                    ctx.ui.notify(`⚠ Raw review: ${(text || JSON.stringify(msg?.content ?? [])).slice(0, 220)}`, "warning");
+                }
+                ctx.ui.notify(formatReviewToast(`Blocked: ${reason}`, msg?.usage), "warning");
+                return { block: true, reason };
             }
 
             if (decision.allowed) {
-                // Allowed: notify in TUI but don't inject into tool result
-                if (ctx.hasUI) ctx.ui.notify(decision.reason, "success");
+                // Allowed: toast only, never inject into tool result (no context pollution)
+                ctx.ui.notify(formatReviewToast(decision.reason, msg?.usage), "info");
                 return undefined;
             }
+            ctx.ui.notify(formatReviewToast(`Blocked: ${decision.reason}`, msg?.usage), "warning");
             return { block: true, reason: `${decision.reason}` };
         } catch {
-            ctx.ui.setStatus("auto-approve", undefined);
-            toolCallDecisions.set(event.toolCallId, "Review error — allowed");
+            ctx.ui.notify(`⚠ Review error — allowed: ${command.slice(0, 80)}`, "warning");
             return undefined;
         }
-    });
-
-    pi.on("tool_result", async (event) => {
-        const note = toolCallDecisions.get(event.toolCallId);
-        if (!note) return;
-        toolCallDecisions.delete(event.toolCallId);
-        return {
-            content: [{ type: "text" as const, text: note + "\n" }, ...(event.content ?? [])],
-        };
     });
 }
