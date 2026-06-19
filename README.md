@@ -29,14 +29,11 @@
 <safety_review>
   <request>
     <command>...</command>
-    <instruction>...</instruction>
-    <rules>...</rules>
-    <output_contract>...</output_contract>
   </request>
 </safety_review>
 ```
 
-主提示词会追加一段固定的说明：  
+主提示词会追加一段固定的说明（规则和输出契约都在这里固定写死）：  
 `Safety review requests will be sent as the last user message wrapped in <safety_review>...`
 
 审查提示在界面中会显示 `🕵️`。
