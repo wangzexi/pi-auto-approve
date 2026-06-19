@@ -29,6 +29,10 @@
 <safety_review>
   <request>
     <command>...</command>
+    <instruction>...</instruction>
+    <rules>...</rules>
+    <output_contract>...</output_contract>
+    <example>...</example>
   </request>
 </safety_review>
 ```

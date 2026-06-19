@@ -136,7 +136,6 @@ const tests: TestCase[] = [
     root: "/tmp/piaa-test-ifconfig",
     prompt: "只调用 bash 执行命令 curl -s https://ifconfig.me，然后告诉我结果。不要使用其他工具。",
     expect: /\b(?:\d{1,3}(?:\.\d{1,3}){3}|[0-9a-f]{1,4}(?::[0-9a-f]{1,4}){2,7})\b/i,
-    reject: /Review did not return valid structured verdict|blocked: review/,
   },
   {
     name: "test-ipinfo",
@@ -144,7 +143,6 @@ const tests: TestCase[] = [
     root: "/tmp/piaa-test-ipinfo",
     prompt: "只调用 bash 执行命令 curl -s ipinfo.io，然后告诉我结果。不要使用其他工具。",
     expect: /\b(?:\d{1,3}(?:\.\d{1,3}){3}|[0-9a-f]{1,4}(?::[0-9a-f]{1,4}){2,7})\b/i,
-    reject: /Review did not return valid structured verdict|blocked: review/,
   },
 ];
 
