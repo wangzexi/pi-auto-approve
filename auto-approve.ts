@@ -61,8 +61,8 @@ function formatCacheHitRate(usage: any): string | null {
 }
 
 function formatReviewToast(reason: string, usage: any): string {
-    const cache = formatCacheHitRate(usage);
-    return cache ? `🕵️ ${reason} · ${cache}` : `🕵️ ${reason}`;
+    const usageSummary = formatUsageSummary(usage);
+    return usageSummary ? `🕵️ ${reason} · ${usageSummary}` : `🕵️ ${reason}`;
 }
 
 function shouldDebugReview(): boolean {
@@ -73,6 +73,16 @@ function getUsageCount(usage: any, ...keys: string[]): string {
     const raw = keys.map((key) => usage?.[key]).find((value) => value !== undefined);
     const value = Number(raw);
     return Number.isFinite(value) ? Math.round(value).toString() : "N/A";
+}
+
+function formatUsageSummary(usage: any): string | null {
+    if (!usage) return null;
+    const cache = formatCacheHitRate(usage) ?? "CH N/A";
+    const input = getUsageCount(usage, "input", "inputTokens");
+    const output = getUsageCount(usage, "output", "outputTokens");
+    const cacheRead = getUsageCount(usage, "cacheRead");
+    const total = getUsageCount(usage, "totalTokens");
+    return `${cache} | input=${input} | output=${output} | cacheRead=${cacheRead} | total=${total}`;
 }
 
 function getTextContent(content: unknown): string {
@@ -262,12 +272,8 @@ export default function (pi: ExtensionAPI) {
             const ch = formatCacheHitRate(msg?.usage) ?? "N/A";
             const inputTextCount = reviewInput.length;
             const outputTextCount = (reviewOutput || "").length;
-            const inputTokenCount = getUsageCount(msg?.usage, "input", "inputTokens");
-            const outputTokenCount = getUsageCount(msg?.usage, "output", "outputTokens");
-            const cacheReadCount = getUsageCount(msg?.usage, "cacheRead");
-            const totalTokenCount = getUsageCount(msg?.usage, "totalTokens");
             ctx.ui.notify(
-                `🧪 Review trace\nINPUT(${inputTextCount} chars): ${reviewInput.slice(0, 1000)}\nOUTPUT(${outputTextCount} chars): ${(reviewOutput || "").slice(0, 1000)}\n${ch} | input=${inputTokenCount} | output=${outputTokenCount} | cacheRead=${cacheReadCount} | total=${totalTokenCount}`,
+                `🧪 Review trace\nINPUT(${inputTextCount} chars): ${reviewInput.slice(0, 1000)}\nOUTPUT(${outputTextCount} chars): ${(reviewOutput || "").slice(0, 1000)}\n${formatUsageSummary(msg?.usage) ?? ch}`,
                 "info",
             );
 
@@ -284,7 +290,7 @@ export default function (pi: ExtensionAPI) {
                 if (shouldDebugReview()) {
                     ctx.ui.notify(`⚠ Raw review: ${(text || JSON.stringify(msg?.content ?? [])).slice(0, 220)}`, "warning");
                 }
-                ctx.ui.notify(`🧪 ${reason} (fail-open): ${command.slice(0, 80)} · ${formatCacheHitRate(msg?.usage) ?? "CH N/A"}`, "warning");
+                ctx.ui.notify(`🧪 ${reason} (fail-open): ${command.slice(0, 80)} · ${formatUsageSummary(msg?.usage) ?? "CH N/A"}`, "warning");
                 return undefined;
             }
 
