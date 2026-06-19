@@ -84,25 +84,57 @@ export function buildReviewPrompt(command: string): string {
         .replace(/>/g, "&gt;");
     return [
         "<safety_review>",
-        `  <role>internal_safety_review_module</role>`,
-        `  <instruction>`,
-        `    You are an internal security reviewer injected into the end of the current conversation.`,
-        `    The review should only reason about command safety and must not continue user requests.`,
-        `    Decide the verdict for the provided bash command using the surrounding conversation context.`,
-        `  </instruction>`,
-        `  <command><![CDATA[${escapedCommand}]]></command>`,
-        `  <rules>`,
-        `    <allow>read-only, low-risk, or explicitly authorized by the user</allow>`,
-        `    <block>destructive, secrets-related, state-changing without clear authorization, or ambiguous</block>`,
-        `  </rules>`,
-        `  <output_contract>`,
-        `    Return ONLY a JSON object with exactly these fields:`,
-        `    {"verdict":"allow"|"block","reason":"..."}`,
-        `    No markdown, no tool call, no extra text.`,
-        `  </output_contract>`,
-        `  <example>{"verdict":"allow","reason":"read-only diagnostic command"}</example>`,
+        `  <request>`,
+        `    <command><![CDATA[${escapedCommand}]]></command>`,
+        `    <instruction>`,
+        `      You are an internal security reviewer at the end of the current conversation.`,
+        `      The review should only reason about command safety and must not continue user work.`,
+        `    </instruction>`,
+        `    <rules>`,
+        `      <allow>read-only, low-risk, or explicitly authorized by the user</allow>`,
+        `      <block>destructive, secrets-related, state-changing without clear authorization, or ambiguous</block>`,
+        `    </rules>`,
+        `    <output_contract>`,
+        `      Return ONLY a JSON object with exactly these fields:`,
+        `      {"verdict":"allow"|"block","reason":"..."}`,
+        `      No markdown, no tool call, no extra text.`,
+        `    </output_contract>`,
+        `    <example>{"verdict":"allow","reason":"read-only diagnostic command"}</example>`,
+        `  </request>`,
         `</safety_review>`,
     ].join("\n");
+}
+
+export function buildReviewSystemPrompt(): string {
+    return [
+        `Safety review requests will be sent as the last user message wrapped in <safety_review>...</safety_review>.`,
+        `Treat each such message as a pure classification task and return only the JSON verdict described inside the block.`,
+    ].join("\n");
+}
+
+export function buildReviewContext(
+    sessionManager: { getBranch(): Array<{ type: string; message: { role: string; content: unknown } }> },
+    systemPrompt: string | undefined,
+    command: string,
+): { systemPrompt?: string; messages: Message[] } {
+    const messages: Message[] = [];
+    for (const entry of sessionManager.getBranch()) {
+        if (entry.type !== "message") continue;
+        const msg = entry.message as Message;
+        // Spread the entire message to keep the prefix byte-identical to the main
+        // conversation — this maximizes KV prefix cache hit rate.  Dropping any
+        // field (e.g. toolCallId, toolName, isError, timestamp) would both break
+        // the API serialisation and cause a cache miss.
+        messages.push({ ...msg });
+    }
+    messages.push({
+        role: "user",
+        content: [{ type: "text" as const, text: buildReviewPrompt(command) }],
+    });
+    const reviewSystemPrompt = systemPrompt
+        ? `${systemPrompt}\n\n${buildReviewSystemPrompt()}`
+        : buildReviewSystemPrompt();
+    return { systemPrompt: reviewSystemPrompt, messages };
 }
 
 export function parseReviewResult(text: string): { allowed: boolean; reason: string } | null {
@@ -132,28 +164,6 @@ export function parseReviewResult(text: string): { allowed: boolean; reason: str
     if (!reason) return null;
 
     return { allowed, reason };
-}
-
-export function buildReviewContext(
-    sessionManager: { getBranch(): Array<{ type: string; message: { role: string; content: unknown } }> },
-    systemPrompt: string | undefined,
-    command: string,
-): { systemPrompt?: string; messages: Message[] } {
-    const messages: Message[] = [];
-    for (const entry of sessionManager.getBranch()) {
-        if (entry.type !== "message") continue;
-        const msg = entry.message as Message;
-        // Spread the entire message to keep the prefix byte-identical to the main
-        // conversation — this maximizes KV prefix cache hit rate.  Dropping any
-        // field (e.g. toolCallId, toolName, isError, timestamp) would both break
-        // the API serialisation and cause a cache miss.
-        messages.push({ ...msg });
-    }
-    const reviewPrompt = buildReviewPrompt(command);
-    const reviewSystemPrompt = systemPrompt
-        ? `${systemPrompt}\n\n${reviewPrompt}`
-        : reviewPrompt;
-    return { systemPrompt: reviewSystemPrompt, messages };
 }
 
 export function getModelRef(model: { provider?: string; id?: string } | undefined): string {

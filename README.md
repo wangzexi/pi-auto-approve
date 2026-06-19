@@ -19,7 +19,7 @@
 3. **模型自省** — 模型基于完整对话考虑风险等级、用户意图、注入风险、替代方案
 4. **结果不注入** — 通过的命令不注入任何审批记录，模型看不到审查存在；被阻止的命令直接返回原因
 
-审查提示以 XML 包裹的系统注入片段提交给同一主会话模型，输出仍是结构化 JSON 契约，示例如下：
+审查请求是以 `role:"user"` 的 XML 包裹消息提交，示例结构如下（固定边界便于模型定位）：
 
 ```json
 {"verdict":"allow" | "block","reason":"..."}
@@ -27,12 +27,17 @@
 
 ```xml
 <safety_review>
-  <role>internal_safety_review_module</role>
-  <instruction>...</instruction>
-  <command>...</command>
-  <output_contract>...</output_contract>
+  <request>
+    <command>...</command>
+    <instruction>...</instruction>
+    <rules>...</rules>
+    <output_contract>...</output_contract>
+  </request>
 </safety_review>
 ```
+
+主提示词会追加一段固定的说明：  
+`Safety review requests will be sent as the last user message wrapped in <safety_review>...`
 
 审查提示在界面中会显示 `🕵️`。
 
