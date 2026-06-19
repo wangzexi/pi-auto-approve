@@ -29,11 +29,13 @@
 
 ```xml
 <safety_review>
-  <instruction>...</instruction>
-  <allow>...</allow>
-  <block>...</block>
-  <output>...</output>
-  <command><![CDATA[...]]></command>
+  <request>
+    <instruction>...</instruction>
+    <rules>...</rules>
+    <output_contract>...</output_contract>
+    <example>...</example>
+    <command><![CDATA[...]]></command>
+  </request>
 </safety_review>
 ```
 
