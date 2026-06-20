@@ -3,7 +3,7 @@
 import { mkdirSync, rmSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseReviewResult } from "../auto-approve";
+import { AUTO_BLOCKED, parseReviewResult } from "../auto-approve";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const model = process.env.PI_TEST_MODEL ?? "deepseek/deepseek-v4-pro";
@@ -195,8 +195,38 @@ for (const parserCase of parserCases) {
 }
 if (!parserFailed) console.log("  PASS");
 
+const blockedRuleCases: Array<{ name: string; command: string; blocked: boolean }> = [
+  {
+    name: "allow dd from /dev/zero as read source",
+    command: `ssh sg "dd if=/dev/zero bs=1M count=100 2>/dev/null" | pv -b > /dev/null`,
+    blocked: false,
+  },
+  {
+    name: "allow dd from /dev/zero to /dev/null",
+    command: "dd if=/dev/zero of=/dev/null bs=1M count=10",
+    blocked: false,
+  },
+  {
+    name: "block dd writing raw disk device",
+    command: "dd if=/dev/zero of=/dev/sda bs=1M",
+    blocked: true,
+  },
+];
+
+console.log("0.1) Auto-block regex coverage");
+let blockedRuleFailed = false;
+for (const testCase of blockedRuleCases) {
+  const actual = AUTO_BLOCKED.some((pattern) => pattern.test(testCase.command));
+  if (actual !== testCase.blocked) {
+    blockedRuleFailed = true;
+    console.log(`  FAIL ${testCase.name}: expected ${testCase.blocked}, got ${actual}`);
+  }
+}
+if (!blockedRuleFailed) console.log("  PASS");
+
 let failed = 0;
 if (parserFailed) failed++;
+if (blockedRuleFailed) failed++;
 for (const [index, test] of tests.entries()) {
   const label =
     index === 0

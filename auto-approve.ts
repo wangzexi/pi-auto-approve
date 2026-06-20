@@ -18,9 +18,6 @@
 import { completeSimple } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Message, TextContent } from "@earendil-works/pi-ai";
-import { appendFileSync, mkdirSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { homedir } from "node:os";
 
 // ── Tier 1: Auto-permitted ──
 export const AUTO_PERMITTED = [
@@ -48,12 +45,11 @@ export const AUTO_BLOCKED = [
     /\brm\s+(-rf?|--recursive)\s+\/usr\b/,
     /\brm\s+(-rf?|--recursive)\s+\/var\b/,
     /:\(\)\s*\{/,
-    /\bdd\s+if=\/dev/,
+    /\bdd\b[^|;&\n]*\bof=\/dev\/(?!null\b)\S*/,
     /\bmkfs\./,
 ];
 
 let autoApproveEnabled = true;
-const REVIEW_LOG_PATH = join(homedir(), ".pi", "agent", "pi-auto-approve.log");
 
 function formatCacheHitRate(usage: any): string | null {
     if (!usage) return null;
@@ -65,39 +61,13 @@ function formatCacheHitRate(usage: any): string | null {
     return `CH ${cacheHit}%`;
 }
 
-function formatTotalCacheShare(usage: any): string | null {
-    if (!usage) return null;
-    const cacheRead = Number(usage.cacheRead ?? 0);
-    const total = Number(usage.totalTokens ?? 0);
-    if (!Number.isFinite(cacheRead) || !Number.isFinite(total) || total <= 0) return null;
-    const cacheHit = Math.round((cacheRead / total) * 1000) / 10;
-    return `totalCH=${cacheHit}%`;
-}
-
 function formatReviewToast(reason: string, usage: any): string {
-    const usageSummary = formatUsageSummary(usage);
-    return usageSummary ? `🕵️ ${reason} · ${usageSummary}` : `🕵️ ${reason}`;
+    const cache = formatCacheHitRate(usage);
+    return cache ? `🕵️ ${reason} · ${cache}` : `🕵️ ${reason}`;
 }
 
 function shouldDebugReview(): boolean {
     return (globalThis as any).process?.env?.PI_AUTO_APPROVE_DEBUG_REVIEW === "1";
-}
-
-function getUsageCount(usage: any, ...keys: string[]): string {
-    const raw = keys.map((key) => usage?.[key]).find((value) => value !== undefined);
-    const value = Number(raw);
-    return Number.isFinite(value) ? Math.round(value).toString() : "N/A";
-}
-
-function formatUsageSummary(usage: any): string | null {
-    if (!usage) return null;
-    const cache = formatCacheHitRate(usage) ?? "CH N/A";
-    const totalCache = formatTotalCacheShare(usage) ?? "totalCH=N/A";
-    const input = getUsageCount(usage, "input", "inputTokens");
-    const output = getUsageCount(usage, "output", "outputTokens");
-    const cacheRead = getUsageCount(usage, "cacheRead");
-    const total = getUsageCount(usage, "totalTokens");
-    return `${cache} | ${totalCache} | input=${input} | output=${output} | cacheRead=${cacheRead} | total=${total}`;
 }
 
 function getTextContent(content: unknown): string {
@@ -106,15 +76,6 @@ function getTextContent(content: unknown): string {
         .filter((p): p is TextContent => p?.type === "text")
         .map((p) => p.text)
         .join("");
-}
-
-function writeReviewLog(entry: Record<string, unknown>): void {
-    try {
-        mkdirSync(dirname(REVIEW_LOG_PATH), { recursive: true });
-        appendFileSync(REVIEW_LOG_PATH, `${JSON.stringify({ time: new Date().toISOString(), ...entry })}\n`, "utf8");
-    } catch {
-        // Debug logging must never affect command approval behavior.
-    }
 }
 
 function toCdata(value: string): string {
@@ -162,15 +123,13 @@ export function buildReviewContext(
     sessionManager: { getBranch(): Array<{ type: string; message: { role: string; content: unknown } }> },
     systemPrompt: string | undefined,
     command: string,
-): { systemPrompt?: string; messages: Message[]; droppedToolTraceMessages: number } {
+): { systemPrompt?: string; messages: Message[] } {
     const messages: Message[] = [];
-    let droppedToolTraceMessages = 0;
     for (const entry of sessionManager.getBranch()) {
         if (entry.type !== "message") continue;
         const msg = entry.message as Message;
         const sanitized = sanitizeMessageForReview(msg);
         if (!sanitized) {
-            droppedToolTraceMessages++;
             continue;
         }
         // Keep textual conversation context, but remove tool-call transcript
@@ -181,7 +140,7 @@ export function buildReviewContext(
         role: "user",
         content: [{ type: "text" as const, text: buildReviewPrompt(command) }],
     });
-    return { systemPrompt, messages, droppedToolTraceMessages };
+    return { systemPrompt, messages };
 }
 
 export function parseReviewResult(text: string): { allowed: boolean; reason: string } | null {
@@ -298,7 +257,7 @@ export default function (pi: ExtensionAPI) {
                 return { block: true, reason: "Review model is unavailable" };
             }
 
-            const { systemPrompt, messages, droppedToolTraceMessages } = buildReviewContext(ctx.sessionManager, ctx.getSystemPrompt(), command);
+            const { systemPrompt, messages } = buildReviewContext(ctx.sessionManager, ctx.getSystemPrompt(), command);
             const auth = await ctx.modelRegistry.getApiKeyAndHeaders(reviewModel);
             if (!auth?.ok) {
                 const error = auth?.error ? `: ${auth.error}` : "";
@@ -333,34 +292,11 @@ export default function (pi: ExtensionAPI) {
                 msg = await completeReview(messages);
             } catch {
                 // Review timed out (30s) — fail open but tell the user via toast
-                writeReviewLog({
-                    event: "timeout",
-                    command,
-                    model: getModelRef(reviewModel),
-                    sessionId,
-                    messageCount: messages.length,
-                    systemPromptLength: systemPrompt?.length ?? 0,
-                    droppedToolTraceMessages,
-                });
                 ctx.ui.notify(`⏱ Review timed out — allowed: ${command.slice(0, 80)}`, "warning");
                 return undefined;
             }
 
-            const lastReviewInput = messages[messages.length - 1]?.content as unknown;
-            const reviewInput = Array.isArray(lastReviewInput)
-                ? lastReviewInput
-                    .filter((p): p is TextContent => p?.type === "text")
-                    .map((p) => p.text)
-                    .join("")
-                : "";
-            const reviewOutput = getTextContent(msg?.content);
             const ch = formatCacheHitRate(msg?.usage) ?? "N/A";
-            const inputTextCount = reviewInput.length;
-            const outputTextCount = (reviewOutput || "").length;
-            ctx.ui.notify(
-                `🧪 Review trace\nINPUT(${inputTextCount} chars): ${reviewInput.slice(0, 1000)}\nOUTPUT(${outputTextCount} chars): ${(reviewOutput || "").slice(0, 1000)}\n${formatUsageSummary(msg?.usage) ?? ch}`,
-                "info",
-            );
 
             if (msg?.stopReason === "error") {
                 const em = msg?.errorMessage ? ` (${msg.errorMessage})` : '';
@@ -372,72 +308,18 @@ export default function (pi: ExtensionAPI) {
             let decision = text ? parseReviewResult(text) : null;
             if (!decision) {
                 const reason = "Review did not return valid structured verdict";
-                writeReviewLog({
-                    event: "fail_open_unparseable",
-                    command,
-                    model: getModelRef(reviewModel),
-                    sessionId,
-                    messageCount: messages.length,
-                    systemPromptLength: systemPrompt?.length ?? 0,
-                    droppedToolTraceMessages,
-                    reviewInputLength: inputTextCount,
-                    reviewOutputLength: outputTextCount,
-                    reviewInput,
-                    reviewOutput,
-                    stopReason: msg?.stopReason,
-                    usage: msg?.usage,
-                    usageSummary: formatUsageSummary(msg?.usage),
-                    rawContent: msg?.content,
-                    reason,
-                });
                 if (shouldDebugReview()) {
                     ctx.ui.notify(`⚠ Raw review: ${(text || JSON.stringify(msg?.content ?? [])).slice(0, 220)}`, "warning");
                 }
-                ctx.ui.notify(`🧪 ${reason} (fail-open): ${command.slice(0, 80)} · ${formatUsageSummary(msg?.usage) ?? "CH N/A"}`, "warning");
+                ctx.ui.notify(`🧪 ${reason} (fail-open): ${command.slice(0, 80)} · ${ch}`, "warning");
                 return undefined;
             }
 
             if (decision.allowed) {
                 // Allowed: toast only, never inject into tool result (no context pollution)
-                writeReviewLog({
-                    event: "allow",
-                    command,
-                    model: getModelRef(reviewModel),
-                    sessionId,
-                    messageCount: messages.length,
-                    systemPromptLength: systemPrompt?.length ?? 0,
-                    droppedToolTraceMessages,
-                    reviewInputLength: inputTextCount,
-                    reviewOutputLength: outputTextCount,
-                    reviewInput,
-                    reviewOutput,
-                    stopReason: msg?.stopReason,
-                    usage: msg?.usage,
-                    usageSummary: formatUsageSummary(msg?.usage),
-                    verdict: "allow",
-                    reason: decision.reason,
-                });
                 ctx.ui.notify(formatReviewToast(decision.reason, msg?.usage), "info");
                 return undefined;
             }
-            writeReviewLog({
-                event: "block",
-                command,
-                model: getModelRef(reviewModel),
-                sessionId,
-                messageCount: messages.length,
-                systemPromptLength: systemPrompt?.length ?? 0,
-                droppedToolTraceMessages,
-                reviewInputLength: inputTextCount,
-                reviewOutputLength: outputTextCount,
-                reviewInput,
-                reviewOutput,
-                stopReason: msg?.stopReason,
-                usage: msg?.usage,
-                usageSummary: formatUsageSummary(msg?.usage),
-                verdict: "block",
-                reason: decision.reason,
-            });
             ctx.ui.notify(formatReviewToast(`Blocked: ${decision.reason}`, msg?.usage), "warning");
             return { block: true, reason: `${decision.reason}` };
         } catch {

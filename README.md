@@ -7,7 +7,7 @@
 | 层级 | 行为 | 示例 |
 |------|------|--------|
 | **1️⃣ 自动放行** | 正则匹配，零延迟 | `ls`, `pwd`, `echo`, `git status` |
-| **2️⃣ 自动阻止** | 正则匹配，直接拒绝 | `rm -rf /`, `dd if=/dev/`, `mkfs.` |
+| **2️⃣ 自动阻止** | 正则匹配，直接拒绝 | `rm -rf /`, `dd of=/dev/sda`, `mkfs.` |
 | **3️⃣ 自省审查** | 同模型自省，缓存友好 | `rm -rf node_modules`, `npm install`, `curl` |
 
 ## 核心设计
@@ -43,7 +43,7 @@
 
 解析时会从模型返回中提取第一个合法 JSON 裁决对象；JSON 字段不合法或找不到裁决对象才按无效审查处理。
 
-审查提示在界面中会显示 `🕵️`，并附带 `CH`、`totalCH`、`input`、`output`、`cacheRead`、`total`。其中 `CH` 是 prompt 侧缓存命中率：`cacheRead / (cacheRead + input)`；`totalCH` 是包含输出 token 的旧诊断口径。调试日志写入 `~/.pi/agent/pi-auto-approve.log`，包含审查输入、输出、usage 和过滤的工具轨迹数量。
+审查提示在界面中会显示 `🕵️`，并只附带一个 `CH`。其中 `CH` 是 prompt 侧缓存命中率：`cacheRead / (cacheRead + input)`。
 
 ## 安装
 
