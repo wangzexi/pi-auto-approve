@@ -147,9 +147,8 @@ export function buildReviewPrompt(command: string): string {
         `      <block>destructive, secrets-related, credential exfiltration, private-file exfiltration, state-changing without clear authorization, or ambiguous</block>`,
         `    </rules>`,
         `    <output_contract>`,
-        `      Return ONLY a JSON object with exactly these fields:`,
+        `      Return a JSON object with exactly these fields:`,
         `      {"verdict":"allow"|"block","reason":"..."}`,
-        `      The first output character must be { and the last output character must be }.`,
         `      No markdown, no XML, no DSML, no tool call, no extra text.`,
         `    </output_contract>`,
         `    <example>{"verdict":"allow","reason":"read-only diagnostic command"}</example>`,
@@ -186,11 +185,13 @@ export function buildReviewContext(
 }
 
 export function parseReviewResult(text: string): { allowed: boolean; reason: string } | null {
-    const normalized = text.trim();
+    const normalized = text.replace(/```(?:json)?/gi, "```").trim();
+    const payloadText = extractFirstJsonObject(normalized);
+    if (!payloadText) return null;
 
     let payload: unknown;
     try {
-        payload = JSON.parse(normalized);
+        payload = JSON.parse(payloadText);
     } catch {
         return null;
     }
@@ -212,6 +213,38 @@ export function parseReviewResult(text: string): { allowed: boolean; reason: str
     if (!reason) return null;
 
     return { allowed, reason };
+}
+
+function extractFirstJsonObject(text: string): string | null {
+    for (let start = text.indexOf("{"); start !== -1; start = text.indexOf("{", start + 1)) {
+        let depth = 0;
+        let inString = false;
+        let escaped = false;
+        for (let index = start; index < text.length; index++) {
+            const char = text[index];
+            if (inString) {
+                if (escaped) {
+                    escaped = false;
+                } else if (char === "\\") {
+                    escaped = true;
+                } else if (char === "\"") {
+                    inString = false;
+                }
+                continue;
+            }
+            if (char === "\"") {
+                inString = true;
+                continue;
+            }
+            if (char === "{") {
+                depth++;
+            } else if (char === "}") {
+                depth--;
+                if (depth === 0) return text.slice(start, index + 1);
+            }
+        }
+    }
+    return null;
 }
 
 export function getModelRef(model: { provider?: string; id?: string } | undefined): string {

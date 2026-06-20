@@ -41,6 +41,8 @@
 
 每次审查将把完整规则与输出契约放在同一条 `safety_review` 用户消息内，不追加或改写 `systemPrompt`。
 
+解析时会从模型返回中提取第一个合法 JSON 裁决对象；JSON 字段不合法或找不到裁决对象才按无效审查处理。
+
 审查提示在界面中会显示 `🕵️`，并附带 `CH`、`totalCH`、`input`、`output`、`cacheRead`、`total`。其中 `CH` 是 prompt 侧缓存命中率：`cacheRead / (cacheRead + input)`；`totalCH` 是包含输出 token 的旧诊断口径。调试日志写入 `~/.pi/agent/pi-auto-approve.log`，包含审查输入、输出、usage 和过滤的工具轨迹数量。
 
 ## 安装

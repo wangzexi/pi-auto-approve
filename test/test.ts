@@ -3,6 +3,7 @@
 import { mkdirSync, rmSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseReviewResult } from "../auto-approve";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const model = process.env.PI_TEST_MODEL ?? "deepseek/deepseek-v4-pro";
@@ -154,7 +155,48 @@ process.on("SIGINT", () => {
 
 console.log("=== pi-auto-approve test suite ===\n");
 
+const parserCases: Array<{ name: string; input: string; allowed: boolean | null }> = [
+  {
+    name: "parse strict JSON",
+    input: `{"verdict":"allow","reason":"read-only diagnostic"}`,
+    allowed: true,
+  },
+  {
+    name: "parse fenced JSON",
+    input: "```json\n{\"verdict\":\"allow\",\"reason\":\"read-only diagnostic\"}\n```",
+    allowed: true,
+  },
+  {
+    name: "parse JSON with trailing tool text",
+    input: "{\"verdict\":\"allow\",\"reason\":\"read-only diagnostic\"}\n\n<bash>curl -s https://ifconfig.me</bash>",
+    allowed: true,
+  },
+  {
+    name: "reject invalid JSON",
+    input: "{\"verdict\":\"allow\",\"reason\":\"missing brace\"",
+    allowed: null,
+  },
+  {
+    name: "reject missing reason",
+    input: "{\"verdict\":\"allow\"}",
+    allowed: null,
+  },
+];
+
+console.log("0) Review parser compatibility");
+let parserFailed = false;
+for (const parserCase of parserCases) {
+  const parsed = parseReviewResult(parserCase.input);
+  const actual = parsed?.allowed ?? null;
+  if (actual !== parserCase.allowed) {
+    parserFailed = true;
+    console.log(`  FAIL ${parserCase.name}: expected ${parserCase.allowed}, got ${actual}`);
+  }
+}
+if (!parserFailed) console.log("  PASS");
+
 let failed = 0;
+if (parserFailed) failed++;
 for (const [index, test] of tests.entries()) {
   const label =
     index === 0
